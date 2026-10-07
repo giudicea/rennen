@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="de-CH">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KI-Rennen — Neuroevolution</title>
+<meta name="description" content="Autos mit neuronalem Netz lernen per Evolution eine Rennstrecke — danach selbst gegen die beste KI fahren.">
+<link rel="stylesheet" href="styles.css?v=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%23161826'/%3E%3Cpath fill='%239184d9' d='M5 15l2-6h10l2 6v3h-2v-1H7v1H5z'/%3E%3C/svg%3E">
+<style>
+  .race { max-width: 1180px; margin: 0 auto; padding: 16px; display: grid; gap: 16px;
+    grid-template-columns: minmax(0, 1fr) 300px; }
+  @media (max-width: 860px) { .race { grid-template-columns: minmax(0, 1fr); } }
+  .race-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; max-width: 1180px;
+    margin: 0 auto; padding: 16px 16px 0; }
+  .race-head h1 { font-size: 20px; margin: 0; }
+  .race-head a { font-size: 13px; }
+  .card { background: var(--color-surface); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); padding: 14px; }
+  #track { width: 100%; height: auto; display: block; border-radius: var(--radius-md); background: #10111b; touch-action: none; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 13px; }
+  .stats b { display: block; font-size: 18px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .ctl { display: grid; gap: 10px; font-size: 13px; }
+  .ctl label { display: grid; gap: 2px; }
+  .ctl input[type=range] { width: 100%; accent-color: var(--color-accent); }
+  .ctl .check { display: flex; gap: 8px; align-items: center; }
+  .btns { display: flex; flex-wrap: wrap; gap: 6px; }
+  .btn { font: inherit; font-size: 13px; color: var(--color-text); background: var(--color-neutral-800);
+    border: 0; border-radius: var(--radius-md); padding: 7px 10px; cursor: pointer; }
+  .btn:hover { background: #4b4f5c; }
+  .btn.primary { background: var(--color-accent); color: #161826; font-weight: 500; }
+  .btn.primary:hover { background: var(--color-accent-300); }
+  h2 { font-size: 14px; margin: 0 0 8px; color: var(--color-accent-300); }
+  .side { display: grid; gap: 16px; align-content: start; }
+  #net, #chart { width: 100%; display: block; }
+  .touch { display: none; gap: 8px; margin-top: 10px; }
+  .touch .btn { flex: 1; padding: 16px 0; font-size: 20px; user-select: none; -webkit-user-select: none; }
+  body.racing .touch { display: flex; }
+  body.racing .train-only { display: none; }
+  body:not(.racing) .race-only { display: none; }
+  .msg { font-size: 13px; margin-top: 8px; min-height: 1.4em; }
+  .legend { font-size: 12px; }
+</style>
+</head>
+<body>
+<header class="race-head">
+  <h1>🏎️ KI-Rennen</h1>
+  <span class="text-muted" style="font-size:13px">Neuronale Netze lernen per Evolution fahren</span>
+</header>
+
+<main class="race">
+  <section class="card">
+    <canvas id="track" width="1000" height="640" aria-label="Rennstrecke"></canvas>
+    <div class="touch" aria-label="Steuerung">
+      <button class="btn" data-key="left">◀</button>
+      <button class="btn" data-key="brake">■</button>
+      <button class="btn" data-key="gas">▲</button>
+      <button class="btn" data-key="right">▶</button>
+    </div>
+    <div class="msg" id="msg"></div>
+    <p class="text-muted legend train-only">
+      Jedes Auto ist ein eigenes neuronales Netz (8 Eingaben → 10 → 6 → 2 Ausgaben).
+      Eingaben: 7 Abstands-Sensoren + Tempo. Ausgaben: Lenkung und Gas/Bremse.
+      Wer die Wand berührt, scheidet aus. Die besten Fahrer werden gekreuzt und
+      mutiert — so wird jede Generation besser.
+    </p>
+    <p class="text-muted legend race-only">
+      Steuerung: <b>Pfeiltasten</b> oder <b>WASD</b> (bzw. Tasten unten am Handy).
+      Du fährst <span style="color:#f2c94c">gelb</span>, die KI <span style="color:#9184d9">lila</span>.
+      3 Runden — wer zuerst durch ist, gewinnt!
+    </p>
+  </section>
+
+  <aside class="side">
+    <section class="card">
+      <h2>Training</h2>
+      <div class="stats">
+        <div>Generation<b id="s-gen">1</b></div>
+        <div>Am Fahren<b id="s-alive">0</b></div>
+        <div>Beste (letzte Gen.)<b id="s-last">–</b></div>
+        <div>Rekord<b id="s-rec">–</b></div>
+      </div>
+      <canvas id="chart" width="560" height="120" style="margin-top:10px"></canvas>
+    </section>
+
+    <section class="card">
+      <h2>Gehirn des führenden Autos</h2>
+      <canvas id="net" width="560" height="300"></canvas>
+      <div class="text-muted legend">Linien: <span style="color:#6fcf97">positiv</span> / <span style="color:#eb5757">negativ</span> gewichtet · Kreise leuchten je nach Aktivierung</div>
+    </section>
+
+    <section class="card ctl">
+      <div class="train-only ctl">
+        <label>Tempo: <span id="v-speed">1×</span>
+          <input type="range" id="speed" min="1" max="40" value="1"></label>
+        <label>Mutationsrate: <span id="v-mut">10 %</span>
+          <input type="range" id="mut" min="1" max="50" value="10"></label>
+        <label class="check"><input type="checkbox" id="rays" checked> Sensoren anzeigen</label>
+        <label class="check"><input type="checkbox" id="shuffle"> Jede Generation neue Strecke (lernt allgemeiner)</label>
+        <div class="btns">
+          <button class="btn" id="b-track">🔀 Neue Strecke</button>
+          <button class="btn" id="b-reset">↺ Neu starten</button>
+          <button class="btn" id="b-save">💾 Speichern</button>
+          <button class="btn" id="b-load">📂 Laden</button>
+        </div>
+        <button class="btn primary" id="b-race">🏁 Gegen die KI fahren</button>
+      </div>
+      <div class="race-only btns">
+        <button class="btn primary" id="b-again">🔁 Nochmal</button>
+        <button class="btn" id="b-train">← Zurück zum Training</button>
+      </div>
+    </section>
+  </aside>
+</main>
+
+<script src="nn.js?v=1"></script>
+<script src="sim.js?v=1"></script>
+<script src="rennen.js?v=1"></script>
+</body>
+</html>
