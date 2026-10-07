@@ -172,6 +172,112 @@
     }
   }
 
+  // ─── Bild-Strecke (z. B. in Paint gemalt) ───
+  // Farben: dunkel (schwarz/grau) = Strasse, hell (weiss …) = Wand,
+  // grün = Start-/Ziellinie quer über die Strasse, rot (optional) = Fahrtrichtung.
+  function pixelKind(r, g, b) {
+    if (g > 120 && g > r + 40 && g > b + 40) return 3;            // grün: Startlinie
+    if (r > 140 && r > g + 60 && r > b + 60) return 4;            // rot: Richtung
+    return (0.299 * r + 0.587 * g + 0.114 * b) < 140 ? 1 : 0;     // dunkel = Strasse
+  }
+
+  /**
+   * Baut eine Strecke aus Bildpunkten (RGBA, genau WORLD_W × WORLD_H).
+   * @param {Uint8ClampedArray} rgba
+   * @param {boolean} [flip]  Fahrtrichtung umdrehen
+   * @returns {object} Strecke oder { error }
+   */
+  function trackFromPixels(rgba, flip) {
+    const W = WORLD_W, H = WORLD_H, size = W * H;
+    const kind = new Uint8Array(size);
+    let gx = 0, gy = 0, gn = 0, rx = 0, ry = 0, rn = 0, roadN = 0;
+    for (let i = 0; i < size; i++) {
+      const k = pixelKind(rgba[i * 4], rgba[i * 4 + 1], rgba[i * 4 + 2]);
+      kind[i] = k;
+      const x = i % W, y = (i / W) | 0;
+      if (k === 3) { gx += x; gy += y; gn++; }
+      else if (k === 4) { rx += x; ry += y; rn++; }
+      else if (k === 1) roadN++;
+    }
+    if (roadN < 2000) return { error: 'Keine Strasse gefunden — male die Strasse schwarz oder dunkelgrau auf weissen Hintergrund.' };
+    if (gn < 5) return { error: 'Keine grüne Startlinie gefunden — zeichne eine grüne Linie quer über die Strasse.' };
+    gx /= gn; gy /= gn;
+    // Hauptachse der grünen Linie (Kovarianz) -> Normale = Fahrtrichtung
+    let sxx = 0, syy = 0, sxy = 0;
+    for (let i = 0; i < size; i++) {
+      if (kind[i] !== 3) continue;
+      const dx = (i % W) - gx, dy = ((i / W) | 0) - gy;
+      sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
+    }
+    const th = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+    let nx = -Math.sin(th), ny = Math.cos(th);
+    if (rn) { if ((rx / rn - gx) * nx + (ry / rn - gy) * ny < 0) { nx = -nx; ny = -ny; } }
+    if (flip) { nx = -nx; ny = -ny; }
+
+    // Strasse = dunkel + rot; Startlinie ist für die Distanz-Suche eine Sperre
+    const road = new Uint8Array(size);
+    for (let i = 0; i < size; i++) road[i] = (kind[i] === 1 || kind[i] === 3 || kind[i] === 4) ? 1 : 0;
+    for (let x = 0; x < W; x++) { road[x] = 0; road[(H - 1) * W + x] = 0; }
+    for (let y = 0; y < H; y++) { road[y * W] = 0; road[y * W + W - 1] = 0; }
+
+    // Breitensuche ab der Vorderseite der Startlinie einmal rundherum
+    const dist = new Float32Array(size).fill(-1);
+    const queue = new Int32Array(size);
+    let qh = 0, qt = 0;
+    const side = new Int8Array(size);   // +1/-1: Strassenpunkte direkt an der Linie
+    for (let i = 0; i < size; i++) {
+      if (kind[i] !== 3) continue;
+      const x = i % W, y = (i / W) | 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const j = (y + dy) * W + (x + dx);
+        if (j < 0 || j >= size || !road[j] || kind[j] === 3) continue;
+        const sd = ((x + dx) - gx) * nx + ((y + dy) - gy) * ny;
+        side[j] = sd >= 0 ? 1 : -1;
+        if (sd >= 0 && dist[j] < 0) { dist[j] = 0; queue[qt++] = j; }
+      }
+    }
+    if (!qt) return { error: 'Die grüne Startlinie liegt nicht auf der Strasse.' };
+    const D8 = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, 1.414], [1, -1, 1.414], [-1, 1, 1.414], [-1, -1, 1.414]];
+    while (qh < qt) {
+      const i = queue[qh++], x = i % W, y = (i / W) | 0;
+      for (const [dx, dy, c] of D8) {
+        const j = (y + dy) * W + (x + dx);
+        if (!road[j] || kind[j] === 3 || dist[j] >= 0) continue;
+        dist[j] = dist[i] + c;
+        queue[qt++] = j;
+      }
+    }
+    // Länge = Distanz auf der Rückseite der Startlinie
+    let L = 0, back = 0;
+    for (let i = 0; i < size; i++) if (side[i] === -1 && dist[i] > 0) { L += dist[i]; back++; }
+    if (!back) return { error: 'Die Strasse ist keine geschlossene Runde (oder die Startlinie ist nicht verbunden).' };
+    L /= back;
+    let maxD = 0;
+    for (let i = 0; i < size; i++) if (dist[i] > maxD) maxD = dist[i];
+    if (L < maxD * 0.6) return { error: 'Die grüne Linie muss die Strasse ganz durchqueren (von Rand zu Rand).' };
+    if (L < 300) return { error: 'Die Runde ist zu kurz.' };
+    for (let i = 0; i < size; i++) if (kind[i] === 3) dist[i] = 0;
+
+    const n = Math.round(L / 8);
+    return {
+      kind: 'bild', road, dist, flip: !!flip, n, length: L,
+      start: { x: gx, y: gy, a: Math.atan2(ny, nx) },
+      maxSteps: Math.max(MAX_STEPS, n * LAPS * 4)
+    };
+  }
+
+  const onRoad = (tr, x, y) => {
+    const xi = x | 0, yi = y | 0;
+    return xi >= 0 && yi >= 0 && xi < WORLD_W && yi < WORLD_H && tr.road[yi * WORLD_W + xi] === 1;
+  };
+  // Fortschritt (in ~8-px-Einheiten) an einer Stelle, -1 = unbekannt
+  const distAt = (tr, x, y) => {
+    const xi = x | 0, yi = y | 0;
+    if (xi < 0 || yi < 0 || xi >= WORLD_W || yi >= WORLD_H) return -1;
+    const d = tr.dist[yi * WORLD_W + xi];
+    return d < 0 ? -1 : d / 8;
+  };
+
   // ─── Auto ───
   class Car {
     constructor(track, brain) {
@@ -180,9 +286,14 @@
     }
 
     reset(track) {
-      const a = track.center[0], b = track.center[1];
-      this.x = a[0]; this.y = a[1];
-      this.a = Math.atan2(b[1] - a[1], b[0] - a[0]);
+      if (track.start) {
+        this.x = track.start.x; this.y = track.start.y; this.a = track.start.a;
+      } else {
+        const a = track.center[0], b = track.center[1];
+        this.x = a[0]; this.y = a[1];
+        this.a = Math.atan2(b[1] - a[1], b[0] - a[0]);
+      }
+      this.du = 0;            // Bild-Strecke: letzter Distanzwert
       this.v = 0;
       this.idx = 0;           // nächster Mittellinien-Punkt
       this.n = track.n;
@@ -219,6 +330,14 @@
         const ang = this.a + RAY_ANGLES[r];
         const ex = this.x + Math.cos(ang) * RAY_LEN, ey = this.y + Math.sin(ang) * RAY_LEN;
         let best = 1;
+        if (track.road) {
+          const cx = Math.cos(ang), cy = Math.sin(ang);
+          for (let d = 2; d <= RAY_LEN; d += 3) {
+            if (!onRoad(track, this.x + cx * d, this.y + cy * d)) { best = d / RAY_LEN; break; }
+          }
+          this.rays[r] = best;
+          continue;
+        }
         for (let d = -15; d <= 40; d++) {
           const i = mod(this.idx + d, track.n), j = (i + 1) % track.n;
           for (const wall of [track.left, track.right]) {
@@ -233,6 +352,13 @@
 
     hitsWall(track) {
       const c = this.corners();
+      if (track.road) {
+        for (let k = 0; k < 4; k++) {
+          const p = c[k], q = c[(k + 1) % 4];
+          if (!onRoad(track, p[0], p[1]) || !onRoad(track, (p[0] + q[0]) / 2, (p[1] + q[1]) / 2)) return true;
+        }
+        return false;
+      }
       for (let d = -6; d <= 6; d++) {
         const i = mod(this.idx + d, track.n), j = (i + 1) % track.n;
         for (const wall of [track.left, track.right]) {
@@ -260,6 +386,57 @@
       this.x += Math.cos(this.a) * this.v;
       this.y += Math.sin(this.a) * this.v;
 
+      if (track.road) this.progressRaster(track);
+      else this.progressVector(track);
+
+      if (this.hitsWall(track)) {
+        if (bounce) this.bounce(track, ox, oy);
+        else { this.alive = false; this.crashed = true; return; }
+      }
+
+      if (this.progress > this.best) { this.best = this.progress; this.sinceBest = 0; }
+      else this.sinceBest++;
+
+      if (this.progress >= LAPS * track.n && !this.finished) {
+        this.finished = true;
+        this.finishStep = this.steps;
+        if (!bounce) this.alive = false;
+      }
+    }
+
+    progressRaster(track) {
+      const d = distAt(track, this.x, this.y);
+      if (d < 0) return;
+      let delta = d - this.du;
+      if (delta > track.n / 2) delta -= track.n;
+      if (delta < -track.n / 2) delta += track.n;
+      this.du = d;
+      this.progress += delta;
+    }
+
+    /** Wandkontakt im Rennmodus: zurück auf die Strasse statt ausscheiden */
+    bounce(track, ox, oy) {
+      this.x = ox; this.y = oy; this.v = 0; this.crashed = true;
+      if (!track.road) {
+        // leicht Richtung Mittellinie schieben, damit man nicht festklebt
+        const p = track.center[this.idx], dx = p[0] - ox, dy = p[1] - oy, d = Math.hypot(dx, dy) || 1;
+        this.x = ox + (dx / d) * 3; this.y = oy + (dy / d) * 3;
+        return;
+      }
+      // Bild-Strecke: in Streckenrichtung drehen und etwas zur Strassenmitte rücken
+      let bestA = this.a, bestD = -1;
+      for (let k = 0; k < 16; k++) {
+        const a = (k / 16) * Math.PI * 2, px = ox + Math.cos(a) * 14, py = oy + Math.sin(a) * 14;
+        const d = onRoad(track, px, py) ? distAt(track, px, py) : -1;
+        let rel = d - this.du;
+        if (rel < -track.n / 2) rel += track.n;
+        if (d >= 0 && rel > bestD) { bestD = rel; bestA = a; }
+      }
+      this.a = bestA;
+      if (this.hitsWall(track)) { this.x += Math.cos(bestA) * 2; this.y += Math.sin(bestA) * 2; }
+    }
+
+    progressVector(track) {
       // nächsten Mittellinien-Punkt lokal suchen -> Fortschritt
       let bi = this.idx, bd = Infinity;
       for (let d = -6; d <= 12; d++) {
@@ -272,25 +449,6 @@
       if (delta < -track.n / 2) delta += track.n;
       this.idx = bi;
       this.progress += delta;
-
-      if (this.hitsWall(track)) {
-        if (bounce) {
-          // zurücksetzen und leicht Richtung Mittellinie schieben, damit man nicht festklebt
-          const p = track.center[this.idx], dx = p[0] - ox, dy = p[1] - oy, d = Math.hypot(dx, dy) || 1;
-          this.x = ox + (dx / d) * 3; this.y = oy + (dy / d) * 3;
-          this.v = 0; this.crashed = true;
-        }
-        else { this.alive = false; this.crashed = true; return; }
-      }
-
-      if (this.progress > this.best) { this.best = this.progress; this.sinceBest = 0; }
-      else this.sinceBest++;
-
-      if (this.progress >= LAPS * track.n && !this.finished) {
-        this.finished = true;
-        this.finishStep = this.steps;
-        if (!bounce) this.alive = false;
-      }
     }
 
     think(track) {
@@ -392,7 +550,7 @@
 
   const RaceSim = {
     WORLD_W, WORLD_H, N, HALF_W, CAR_L, CAR_W, RAY_ANGLES, RAY_LEN, MAX_V, LAYERS, LAPS, MAX_STEPS,
-    makeTrack, trackFromCtrl, validateTrack, Car, World, NeuralNet, mulberry32
+    makeTrack, trackFromCtrl, validateTrack, trackFromPixels, pixelKind, Car, World, NeuralNet, mulberry32
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = RaceSim;

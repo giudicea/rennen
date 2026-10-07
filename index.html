@@ -101,6 +101,19 @@
         <button class="btn" id="b-random">🎲 Zufall</button>
         <button class="btn" id="b-reverse">⇄ Richtung</button>
       </div>
+      <div class="paint">
+        <h2 style="margin-top:4px">🖼️ Strecke aus Bild (Paint)</h2>
+        <p class="text-muted" style="font-size:12px;margin:0 0 6px">
+          Straße <b>schwarz/grau</b> auf <b>weiß</b>, <b style="color:#6fcf97">grüne</b> Linie quer über die Straße = Start,
+          <b style="color:#eb5757">roter</b> Punkt dahinter = Fahrtrichtung. Am besten 1000 × 640 Pixel.
+          Bild auch einfach auf die Strecke ziehen.
+        </p>
+        <div class="btns">
+          <button class="btn" id="b-image">🖼️ Bild laden</button>
+          <button class="btn" id="b-template">📄 Paint-Vorlage</button>
+        </div>
+        <input type="file" id="file" accept="image/*" hidden>
+      </div>
       <label>Meine Strecken
         <select id="my-tracks"></select></label>
       <div class="btns">
@@ -155,8 +168,8 @@
   </aside>
 </main>
 
-<script src="nn.js?v=2"></script>
-<script src="sim.js?v=2"></script>
-<script src="rennen.js?v=2"></script>
+<script src="nn.js?v=3"></script>
+<script src="sim.js?v=3"></script>
+<script src="rennen.js?v=3"></script>
 </body>
 </html>

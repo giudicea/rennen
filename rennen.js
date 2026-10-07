@@ -56,6 +56,7 @@
       ctx.stroke();
     }
     if (!tr) return;
+    if (tr.road) { ctx.drawImage(renderRaster(tr), 0, 0); return; }
     // Asphalt = Fläche zwischen den Wänden (evenodd)
     ctx.beginPath();
     for (const w of [tr.left, tr.right]) {
@@ -84,6 +85,28 @@
     ctx.lineTo(tr.right[0][0], tr.right[0][1]);
     ctx.stroke();
     ctx.setLineDash([]);
+  }
+
+  // Bild-Strecke einmal in ein Offscreen-Bild umrechnen (Asphalt, Rand, Startlinie)
+  function renderRaster(tr) {
+    if (tr.render) return tr.render;
+    const W = S.WORLD_W, H = S.WORLD_H;
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const g = c.getContext('2d'), img = g.createImageData(W, H), d = img.data, src = tr.src && tr.src.rgba;
+    for (let i = 0; i < W * H; i++) {
+      let col = [16, 17, 27];
+      if (tr.road[i]) {
+        const x = i % W;
+        const edge = !tr.road[i - 1] || !tr.road[i + 1] || !tr.road[i - W] || !tr.road[i + W] || x === 0;
+        const green = src && S.pixelKind(src[i * 4], src[i * 4 + 1], src[i * 4 + 2]) === 3;
+        col = edge ? [147, 151, 171] : green ? [233, 233, 237] : [42, 44, 58];
+      }
+      d[i * 4] = col[0]; d[i * 4 + 1] = col[1]; d[i * 4 + 2] = col[2]; d[i * 4 + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+    tr.render = c;
+    return c;
   }
 
   function drawCar(c, color, rays) {
@@ -259,7 +282,11 @@
     document.body.classList.remove('racing');
     document.body.classList.add('editing');
     stickyUntil = 0;
-    edit = { pts: world.track.ctrl.map((p) => [p[0], p[1]]), halfW: world.track.halfW, undo: [], drag: null, erase: false };
+    const t = world.track;
+    edit = {
+      pts: t.ctrl ? t.ctrl.map((p) => [p[0], p[1]]) : [], halfW: t.halfW || S.HALF_W,
+      image: t.src ? { ...t.src, flip: t.flip } : null, undo: [], drag: null, erase: false
+    };
     $('width').value = edit.halfW;
     $('v-width').textContent = edit.halfW * 2 + ' px';
     $('erase').checked = false;
@@ -279,12 +306,25 @@
 
   /** Strecke aus den Punkten neu bauen; validate = auf Fehler prüfen (teuer, nicht beim Ziehen) */
   function rebuild(validate) {
-    edit.track = edit.pts.length >= 3 ? S.trackFromCtrl(edit.pts, edit.halfW) : null;
-    if (validate) edit.error = edit.track ? S.validateTrack(edit.track) : 'Mindestens 3 Punkte setzen.';
+    if (edit.image) {
+      if (!edit.image.track || edit.image.track.flip !== edit.image.flip) {
+        const tr = S.trackFromPixels(edit.image.rgba, edit.image.flip);
+        if (!tr.error) tr.src = { rgba: edit.image.rgba, url: edit.image.url };
+        edit.image.track = tr;
+      }
+      edit.track = edit.image.track.error ? null : edit.image.track;
+      edit.error = edit.image.track.error || null;
+    } else {
+      edit.track = edit.pts.length >= 3 ? S.trackFromCtrl(edit.pts, edit.halfW) : null;
+      if (validate) edit.error = edit.track ? S.validateTrack(edit.track) : 'Mindestens 3 Punkte setzen.';
+    }
     $('b-apply').disabled = !!edit.error;
     $('b-tsave').disabled = !!edit.error;
-    $('b-share').disabled = !!edit.error;
+    $('b-share').disabled = !!edit.error || !!edit.image;
+    $('width').disabled = !!edit.image;
+    stickyUntil = 0;                       // Editor-Status hat Vorrang vor alten Hinweisen
     if (edit.error) msg('⚠️ ' + edit.error);
+    else if (edit.image) msg(`✓ Bild-Strecke ok — Länge ca. ${Math.round(edit.track.length / 10) * 10} px. Mit „⇄ Richtung“ umdrehen, mit „🗑 Leeren“ zurück zum Punkte-Editor.`);
     else msg(`✓ Strecke ok — ${edit.pts.length} Punkte, Länge ca. ${Math.round(edit.track.n * 8 / 10) * 10} px`);
   }
 
@@ -325,6 +365,7 @@
   cv.addEventListener('pointerdown', (e) => {
     if (!edit) return;
     e.preventDefault();
+    if (edit.image) { msg('Bild-Strecke aktiv — ändere das Bild in Paint, oder „🗑 Leeren“ für den Punkte-Editor.'); return; }
     const p = canvasPos(e);
     const i = hitPoint(p);
     if (edit.erase) { if (i >= 0) deletePoint(i); return; }
@@ -346,7 +387,7 @@
   });
 
   cv.addEventListener('pointermove', (e) => {
-    if (!edit) return;
+    if (!edit || edit.image) return;
     const p = canvasPos(e);
     if (!edit.drag) {
       cv.style.cursor = edit.erase ? (hitPoint(p) >= 0 ? 'pointer' : 'default')
@@ -385,7 +426,27 @@
     if (i >= 0) deletePoint(i);
   });
 
+  function startArrow(x, y, ang) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(ang);
+    ctx.fillStyle = COL.pos;
+    ctx.beginPath(); ctx.moveTo(34, 0); ctx.lineTo(18, -9); ctx.lineTo(18, 9); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+
   function editFrame() {
+    if (edit.image) {
+      if (edit.track) {
+        drawTrack(edit.track);
+        startArrow(edit.track.start.x, edit.track.start.y, edit.track.start.a);
+      } else {
+        ctx.fillStyle = COL.bg;
+        ctx.fillRect(0, 0, S.WORLD_W, S.WORLD_H);
+        if (edit.image.img) { ctx.globalAlpha = 0.6; ctx.drawImage(edit.image.img, 0, 0); ctx.globalAlpha = 1; }
+      }
+      return;
+    }
     const bad = !!edit.error && !edit.drag;
     drawTrack(edit.track, { grid: true, wall: bad ? COL.neg : COL.wall });
     const pts = edit.pts, n = pts.length;
@@ -402,13 +463,7 @@
       // Fahrtrichtung am Start
       if (edit.track) {
         const a = edit.track.center[0], b = edit.track.center[3];
-        const ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
-        ctx.save();
-        ctx.translate(a[0], a[1]);
-        ctx.rotate(ang);
-        ctx.fillStyle = COL.pos;
-        ctx.beginPath(); ctx.moveTo(34, 0); ctx.lineTo(18, -9); ctx.lineTo(18, 9); ctx.closePath(); ctx.fill();
-        ctx.restore();
+        startArrow(a[0], a[1], Math.atan2(b[1] - a[1], b[0] - a[0]));
       }
       // Punkte
       const k = Math.max(1, scale() * 0.6);         // Punkte am Handy grösser zeichnen
@@ -463,25 +518,27 @@
   $('b-cancel').addEventListener('click', stopEditor);
   $('b-apply').addEventListener('click', () => {
     if (!edit || edit.error) return;
-    world.setTrack(S.trackFromCtrl(edit.pts, edit.halfW));
+    world.setTrack(edit.image ? edit.track : S.trackFromCtrl(edit.pts, edit.halfW));
     world.bestEver = 0;          // Rekord gilt pro Strecke
     world.history = [];
     stopEditor();
     msg('🏁 Neue Strecke übernommen — die KI lernt jetzt darauf.', true);
   });
   $('b-undo').addEventListener('click', () => {
-    if (!edit || !edit.undo.length) return;
+    if (!edit || edit.image || !edit.undo.length) return;
     edit.pts = edit.undo.pop();
     rebuild(true);
   });
-  $('b-clear').addEventListener('click', () => { snapshot(); edit.pts = []; rebuild(true); });
+  $('b-clear').addEventListener('click', () => { edit.image = null; snapshot(); edit.pts = []; rebuild(true); });
   $('b-random').addEventListener('click', () => {
+    edit.image = null;
     snapshot();
     const tr = S.makeTrack((Math.random() * 1e9) >>> 0);
     edit.pts = tr.ctrl;
     rebuild(true);
   });
   $('b-reverse').addEventListener('click', () => {
+    if (edit.image) { edit.image.flip = !edit.image.flip; rebuild(true); return; }
     if (edit.pts.length < 2) return;
     snapshot();
     edit.pts = [edit.pts[0], ...edit.pts.slice(1).reverse()];
@@ -499,16 +556,20 @@
     const list = loadTracks();
     const name = (prompt('Name der Strecke:', 'Meine Strecke ' + (list.length + 1)) || '').trim();
     if (!name) return;
-    const entry = { name: name.slice(0, 40), w: edit.halfW, p: roundPts(edit.pts) };
+    const entry = edit.image
+      ? { name: name.slice(0, 40), img: edit.image.url, flip: edit.image.flip }
+      : { name: name.slice(0, 40), w: edit.halfW, p: roundPts(edit.pts) };
     const at = list.findIndex((t) => t.name === entry.name);
     if (at >= 0) list[at] = entry; else list.push(entry);
-    msg(storeTracks(list) ? `💾 „${entry.name}“ gespeichert.` : 'Speichern nicht möglich (Browser-Speicher blockiert).');
+    msg(storeTracks(list) ? `💾 „${entry.name}“ gespeichert.` : 'Speichern nicht möglich (Browser-Speicher voll oder blockiert).');
     refreshTrackList();
     $('my-tracks').value = String(at >= 0 ? at : list.length - 1);
   });
   $('b-tload').addEventListener('click', () => {
     const t = loadTracks()[+$('my-tracks').value];
     if (!t || $('my-tracks').value === '') return;
+    if (t.img) { loadImage(t.img, t.flip); return; }
+    edit.image = null;
     snapshot();
     edit.pts = t.p.map((q) => q.slice());
     edit.halfW = t.w;
@@ -532,6 +593,78 @@
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(url).then(done, () => prompt('Link zum Kopieren:', url));
     } else prompt('Link zum Kopieren:', url);
+  });
+
+  // ── Bild-Strecken (Paint) ──
+  /** Bild auf 1000×640 einpassen (weisser Rand) und als Strecke prüfen */
+  function useImage(img, flip) {
+    const c = document.createElement('canvas');
+    c.width = S.WORLD_W; c.height = S.WORLD_H;
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, c.width, c.height);
+    const k = Math.min(c.width / img.width, c.height / img.height);
+    const w = img.width * k, h = img.height * k;
+    g.imageSmoothingEnabled = false;                    // keine Mischfarben an den Kanten
+    g.drawImage(img, (c.width - w) / 2, (c.height - h) / 2, w, h);
+    edit.image = { rgba: g.getImageData(0, 0, c.width, c.height).data, url: c.toDataURL('image/png'), img: c, flip: !!flip };
+    rebuild(true);
+  }
+
+  function loadImage(src, flip) {
+    const img = new Image();
+    img.onload = () => { if (edit) useImage(img, flip); };
+    img.onerror = () => msg('⚠️ Das Bild konnte nicht geladen werden (PNG, JPG oder BMP verwenden).');
+    img.src = src;
+  }
+
+  function loadFile(file) {
+    if (!file || !edit) return;
+    if (!/^image\//.test(file.type) && !/\.(png|jpe?g|bmp|gif|webp)$/i.test(file.name)) { msg('⚠️ Bitte eine Bilddatei wählen.'); return; }
+    const r = new FileReader();
+    r.onload = () => loadImage(r.result, false);
+    r.readAsDataURL(file);
+  }
+
+  $('b-image').addEventListener('click', () => $('file').click());
+  $('file').addEventListener('change', (e) => { loadFile(e.target.files[0]); e.target.value = ''; });
+  cv.addEventListener('dragover', (e) => { if (edit) e.preventDefault(); });
+  cv.addEventListener('drop', (e) => {
+    if (!edit) return;
+    e.preventDefault();
+    loadFile(e.dataTransfer.files[0]);
+  });
+
+  // Vorlage für Paint: aktuelle (oder zufällige) Strecke schwarz auf weiss, grüne Startlinie, roter Richtungspunkt
+  $('b-template').addEventListener('click', () => {
+    let tr = edit && !edit.image && !edit.error && edit.track;
+    if (!tr) tr = S.makeTrack((Math.random() * 1e9) >>> 0);
+    const c = document.createElement('canvas');
+    c.width = S.WORLD_W; c.height = S.WORLD_H;
+    const g = c.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, c.width, c.height);
+    g.beginPath();
+    for (const w of [tr.left, tr.right]) {
+      g.moveTo(w[0][0], w[0][1]);
+      for (let i = 1; i < w.length; i++) g.lineTo(w[i][0], w[i][1]);
+      g.closePath();
+    }
+    g.fillStyle = '#000';
+    g.fill('evenodd');
+    const L = tr.left[0], R = tr.right[0];
+    g.strokeStyle = 'rgb(34,177,76)';
+    g.lineWidth = 6;
+    g.beginPath(); g.moveTo(L[0], L[1]); g.lineTo(R[0], R[1]); g.stroke();
+    const d = tr.center[Math.min(4, tr.n - 1)];
+    g.fillStyle = 'rgb(237,28,36)';
+    g.beginPath(); g.arc(d[0], d[1], 6, 0, Math.PI * 2); g.fill();
+    const a = document.createElement('a');
+    a.href = c.toDataURL('image/png');
+    a.download = 'strecke-vorlage.png';
+    document.body.appendChild(a); a.click(); a.remove();
+    msg('📄 Vorlage heruntergeladen — in Paint öffnen, bearbeiten, speichern und mit „🖼️ Bild laden“ einlesen.', true);
   });
 
   // Strecke aus geteiltem Link übernehmen
