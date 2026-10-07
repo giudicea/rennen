@@ -37,6 +37,13 @@
   body.racing .touch { display: flex; }
   body.racing .train-only { display: none; }
   body:not(.racing) .race-only { display: none; }
+  body.editing .no-edit { display: none; }
+  body:not(.editing) .edit-only { display: none; }
+  .ctl select { font: inherit; font-size: 13px; color: var(--color-text); background: var(--color-neutral-800);
+    border: 0; border-radius: var(--radius-md); padding: 7px 8px; width: 100%; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .help { margin: 0; padding-left: 18px; font-size: 13px; }
+  .help li { margin-bottom: 2px; }
   .msg { font-size: 13px; margin-top: 8px; min-height: 1.4em; }
   .legend { font-size: 12px; }
 </style>
@@ -57,7 +64,7 @@
       <button class="btn" data-key="right">▶</button>
     </div>
     <div class="msg" id="msg"></div>
-    <p class="text-muted legend train-only">
+    <p class="text-muted legend train-only no-edit">
       Jedes Auto ist ein eigenes neuronales Netz (8 Eingaben → 10 → 6 → 2 Ausgaben).
       Eingaben: 7 Abstands-Sensoren + Tempo. Ausgaben: Lenkung und Gas/Bremse.
       Wer die Wand berührt, scheidet aus. Die besten Fahrer werden gekreuzt und
@@ -71,7 +78,42 @@
   </section>
 
   <aside class="side">
-    <section class="card">
+    <section class="card edit-only">
+      <h2>✏️ Strecken-Editor</h2>
+      <ul class="help text-muted">
+        <li><b>Klicken</b>: Punkt hinzufügen</li>
+        <li><b>Maus gedrückt halten &amp; ziehen</b>: freihand zeichnen</li>
+        <li><b>Punkt ziehen</b>: verschieben</li>
+        <li><b>Auf die Linie klicken</b>: Punkt dazwischen einfügen</li>
+        <li><b>Doppel- oder Rechtsklick</b> auf Punkt: löschen</li>
+        <li><b>Am Handy</b>: mit dem Finger statt der Maus; zum Entfernen den 🧽 Löschmodus nutzen.</li>
+        <li>Der grüne Punkt <b>S</b> ist der Start, der Pfeil zeigt die Fahrtrichtung.</li>
+      </ul>
+    </section>
+
+    <section class="card ctl edit-only">
+      <label>Streckenbreite: <span id="v-width">68 px</span>
+        <input type="range" id="width" min="18" max="60" value="34"></label>
+      <label class="check"><input type="checkbox" id="erase"> 🧽 Löschmodus (Punkte antippen)</label>
+      <div class="btns">
+        <button class="btn" id="b-undo">↶ Rückgängig</button>
+        <button class="btn" id="b-clear">🗑 Leeren</button>
+        <button class="btn" id="b-random">🎲 Zufall</button>
+        <button class="btn" id="b-reverse">⇄ Richtung</button>
+      </div>
+      <label>Meine Strecken
+        <select id="my-tracks"></select></label>
+      <div class="btns">
+        <button class="btn" id="b-tsave">💾 Speichern</button>
+        <button class="btn" id="b-tload">📂 Laden</button>
+        <button class="btn" id="b-tdel">✕ Löschen</button>
+        <button class="btn" id="b-share">🔗 Link teilen</button>
+      </div>
+      <button class="btn primary" id="b-apply">✓ Übernehmen &amp; KI trainieren</button>
+      <button class="btn" id="b-cancel">Abbrechen</button>
+    </section>
+
+    <section class="card no-edit">
       <h2>Training</h2>
       <div class="stats">
         <div>Generation<b id="s-gen">1</b></div>
@@ -82,13 +124,13 @@
       <canvas id="chart" width="560" height="120" style="margin-top:10px"></canvas>
     </section>
 
-    <section class="card">
+    <section class="card no-edit">
       <h2>Gehirn des führenden Autos</h2>
       <canvas id="net" width="560" height="300"></canvas>
       <div class="text-muted legend">Linien: <span style="color:#6fcf97">positiv</span> / <span style="color:#eb5757">negativ</span> gewichtet · Kreise leuchten je nach Aktivierung</div>
     </section>
 
-    <section class="card ctl">
+    <section class="card ctl no-edit">
       <div class="train-only ctl">
         <label>Tempo: <span id="v-speed">1×</span>
           <input type="range" id="speed" min="1" max="40" value="1"></label>
@@ -97,10 +139,11 @@
         <label class="check"><input type="checkbox" id="rays" checked> Sensoren anzeigen</label>
         <label class="check"><input type="checkbox" id="shuffle"> Jede Generation neue Strecke (lernt allgemeiner)</label>
         <div class="btns">
-          <button class="btn" id="b-track">🔀 Neue Strecke</button>
+          <button class="btn" id="b-edit">✏️ Strecke bauen</button>
+          <button class="btn" id="b-track">🔀 Zufallsstrecke</button>
           <button class="btn" id="b-reset">↺ Neu starten</button>
-          <button class="btn" id="b-save">💾 Speichern</button>
-          <button class="btn" id="b-load">📂 Laden</button>
+          <button class="btn" id="b-save">💾 Netz speichern</button>
+          <button class="btn" id="b-load">📂 Netz laden</button>
         </div>
         <button class="btn primary" id="b-race">🏁 Gegen die KI fahren</button>
       </div>
@@ -112,8 +155,8 @@
   </aside>
 </main>
 
-<script src="nn.js?v=1"></script>
-<script src="sim.js?v=1"></script>
-<script src="rennen.js?v=1"></script>
+<script src="nn.js?v=2"></script>
+<script src="sim.js?v=2"></script>
+<script src="rennen.js?v=2"></script>
 </body>
 </html>

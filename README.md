@@ -16,6 +16,12 @@ einfach `index.html` im Browser öffnen.
 
 ## Funktionen
 
+- **✏️ Strecken-Editor** — eigene Strecken bauen: Punkte klicken oder freihand
+  zeichnen, Punkte ziehen/einfügen/löschen, Breite einstellen, Fahrtrichtung
+  umdrehen, Rückgängig. Die Strecke wird live geprüft (keine Überschneidungen,
+  keine zu engen Kurven). Strecken lassen sich im Browser **speichern** und per
+  **Link teilen** — wer den Link öffnet, hat sofort deine Strecke.
+
 - Live-Ansicht des **Netzes** des führenden Autos und Fitness-Verlauf
 - Regler für **Tempo** (bis 40×) und **Mutationsrate**
 - Zufällige Strecken, optional jede Generation eine neue (lernt allgemeiner)

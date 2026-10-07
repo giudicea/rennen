@@ -61,7 +61,7 @@
   }
 
   // ─── Strecke ───
-  function buildTrack(seed) {
+  function randomCtrl(seed) {
     const rnd = mulberry32(seed);
     const K = 12, cx = WORLD_W / 2, cy = WORLD_H / 2, rx = 430, ry = 255;
     const ctrl = [];
@@ -70,28 +70,80 @@
       const r = 0.55 + rnd() * 0.45;
       ctrl.push([cx + Math.cos(t) * rx * r, cy + Math.sin(t) * ry * r]);
     }
-    // geschlossene Catmull-Rom-Kurve durch die Kontrollpunkte
-    const center = [];
-    const per = N / K;
+    return ctrl;
+  }
+
+  /**
+   * Baut eine geschlossene Strecke durch Kontrollpunkte (Catmull-Rom).
+   * @param {number[][]} ctrl  mind. 3 Punkte [x, y]
+   * @param {number} [halfW]   halbe Streckenbreite
+   * @param {number} [n]       Anzahl Mittellinien-Punkte (sonst aus der Länge, ~8 px Abstand)
+   */
+  function trackFromCtrl(ctrl, halfW = HALF_W, n) {
+    const K = ctrl.length, per = 20, dense = [];
     for (let i = 0; i < K; i++) {
       const p0 = ctrl[mod(i - 1, K)], p1 = ctrl[i], p2 = ctrl[(i + 1) % K], p3 = ctrl[(i + 2) % K];
       for (let s = 0; s < per; s++) {
         const t = s / per, t2 = t * t, t3 = t2 * t;
         const f = (a, b, c, d) => 0.5 * (2 * b + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
-        center.push([f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]);
+        dense.push([f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]);
       }
     }
-    // Abstände gleichmässiger machen (Resampling nach Bogenlänge)
-    const pts = resample(center, N);
+    if (!n) {
+      let len = 0;
+      for (let i = 0; i < dense.length; i++) {
+        const a = dense[i], b = dense[(i + 1) % dense.length];
+        len += Math.hypot(b[0] - a[0], b[1] - a[1]);
+      }
+      n = Math.max(60, Math.min(800, Math.round(len / 8)));
+    }
+    // Abstände gleichmässig machen (Resampling nach Bogenlänge)
+    const pts = resample(dense, n);
     const left = [], right = [];
-    for (let i = 0; i < N; i++) {
-      const a = pts[mod(i - 1, N)], b = pts[(i + 1) % N];
+    for (let i = 0; i < n; i++) {
+      const a = pts[mod(i - 1, n)], b = pts[(i + 1) % n];
       let tx = b[0] - a[0], ty = b[1] - a[1];
       const len = Math.hypot(tx, ty) || 1; tx /= len; ty /= len;
-      left.push([pts[i][0] - ty * HALF_W, pts[i][1] + tx * HALF_W]);
-      right.push([pts[i][0] + ty * HALF_W, pts[i][1] - tx * HALF_W]);
+      left.push([pts[i][0] - ty * halfW, pts[i][1] + tx * halfW]);
+      right.push([pts[i][0] + ty * halfW, pts[i][1] - tx * halfW]);
     }
-    return { seed, center: pts, left, right };
+    return {
+      ctrl: ctrl.map((p) => [p[0], p[1]]), halfW, n, center: pts, left, right,
+      maxSteps: Math.max(MAX_STEPS, n * LAPS * 4)
+    };
+  }
+
+  function polylinesCross(a, b) {
+    const n = a.length, m = b.length;
+    for (let i = 0; i < n; i++) {
+      const p = a[i], q = a[(i + 1) % n];
+      for (let j = 0; j < m; j++) {
+        const r = b[j], s = b[(j + 1) % m];
+        if (segHit(p[0], p[1], q[0], q[1], r[0], r[1], s[0], s[1]) >= 0) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Prüft eine Strecke; liefert null (ok) oder eine Fehlermeldung */
+  function validateTrack(tr) {
+    if (!tr || tr.ctrl.length < 3) return 'Mindestens 3 Punkte setzen.';
+    const M = 4;
+    for (const w of [tr.left, tr.right]) {
+      for (const p of w) {
+        if (p[0] < M || p[1] < M || p[0] > WORLD_W - M || p[1] > WORLD_H - M) return 'Die Strecke ragt über den Rand.';
+      }
+    }
+    if (polylineSelfIntersects(tr.left) || polylineSelfIntersects(tr.right) || polylinesCross(tr.left, tr.right)) {
+      return 'Die Strecke überschneidet sich oder eine Kurve ist zu eng.';
+    }
+    return null;
+  }
+
+  function buildTrack(seed) {
+    const tr = trackFromCtrl(randomCtrl(seed), HALF_W, N);
+    tr.seed = seed;
+    return tr;
   }
 
   function resample(pts, n) {
@@ -116,7 +168,7 @@
   function makeTrack(seed) {
     for (let s = seed >>> 0; ; s = (s + 7919) >>> 0) {
       const tr = buildTrack(s);
-      if (!polylineSelfIntersects(tr.left) && !polylineSelfIntersects(tr.right)) return tr;
+      if (!validateTrack(tr)) return tr;
     }
   }
 
@@ -133,7 +185,9 @@
       this.a = Math.atan2(b[1] - a[1], b[0] - a[0]);
       this.v = 0;
       this.idx = 0;           // nächster Mittellinien-Punkt
-      this.progress = 0;      // zurückgelegte Punkte (kann über N hinausgehen = Runden)
+      this.n = track.n;
+      this.maxSteps = track.maxSteps;
+      this.progress = 0;      // zurückgelegte Punkte (kann über n hinausgehen = Runden)
       this.best = 0;
       this.sinceBest = 0;
       this.steps = 0;
@@ -145,11 +199,11 @@
       this.out = [0, 0];
     }
 
-    get laps() { return Math.max(0, Math.floor(this.progress / N)); }
+    get laps() { return Math.max(0, Math.floor(this.progress / this.n)); }
 
     get fitness() {
       let f = Math.max(0, this.best);
-      if (this.finished) f += (MAX_STEPS - this.finishStep) * 0.5;
+      if (this.finished) f += (this.maxSteps - this.finishStep) * 0.5;
       return f;
     }
 
@@ -166,7 +220,7 @@
         const ex = this.x + Math.cos(ang) * RAY_LEN, ey = this.y + Math.sin(ang) * RAY_LEN;
         let best = 1;
         for (let d = -15; d <= 40; d++) {
-          const i = mod(this.idx + d, N), j = (i + 1) % N;
+          const i = mod(this.idx + d, track.n), j = (i + 1) % track.n;
           for (const wall of [track.left, track.right]) {
             const t = segHit(this.x, this.y, ex, ey, wall[i][0], wall[i][1], wall[j][0], wall[j][1]);
             if (t >= 0 && t < best) best = t;
@@ -180,7 +234,7 @@
     hitsWall(track) {
       const c = this.corners();
       for (let d = -6; d <= 6; d++) {
-        const i = mod(this.idx + d, N), j = (i + 1) % N;
+        const i = mod(this.idx + d, track.n), j = (i + 1) % track.n;
         for (const wall of [track.left, track.right]) {
           for (let k = 0; k < 4; k++) {
             const p = c[k], q = c[(k + 1) % 4];
@@ -209,13 +263,13 @@
       // nächsten Mittellinien-Punkt lokal suchen -> Fortschritt
       let bi = this.idx, bd = Infinity;
       for (let d = -6; d <= 12; d++) {
-        const i = mod(this.idx + d, N), p = track.center[i];
+        const i = mod(this.idx + d, track.n), p = track.center[i];
         const dd = (p[0] - this.x) ** 2 + (p[1] - this.y) ** 2;
         if (dd < bd) { bd = dd; bi = i; }
       }
       let delta = bi - this.idx;
-      if (delta > N / 2) delta -= N;
-      if (delta < -N / 2) delta += N;
+      if (delta > track.n / 2) delta -= track.n;
+      if (delta < -track.n / 2) delta += track.n;
       this.idx = bi;
       this.progress += delta;
 
@@ -232,7 +286,7 @@
       if (this.progress > this.best) { this.best = this.progress; this.sinceBest = 0; }
       else this.sinceBest++;
 
-      if (this.progress >= LAPS * N && !this.finished) {
+      if (this.progress >= LAPS * track.n && !this.finished) {
         this.finished = true;
         this.finishStep = this.steps;
         if (!bounce) this.alive = false;
@@ -253,7 +307,7 @@
       this.mutationRate = opts.mutationRate ?? 0.1;
       this.mutationStrength = opts.mutationStrength ?? 0.5;
       this.rnd = opts.rnd || Math.random;
-      this.track = makeTrack(opts.seed ?? 1);
+      this.track = opts.track || makeTrack(opts.seed ?? 1);
       this.generation = 1;
       this.bestEver = 0;
       this.champion = null;   // bestes Netz bisher
@@ -264,8 +318,9 @@
       this.step = 0;
     }
 
-    setTrack(seed) {
-      this.track = makeTrack(seed);
+    /** neue Strecke: Seed (Zufallsstrecke) oder fertiges Strecken-Objekt */
+    setTrack(seedOrTrack) {
+      this.track = typeof seedOrTrack === 'object' ? seedOrTrack : makeTrack(seedOrTrack);
       for (const c of this.cars) c.reset(this.track);
       this.step = 0;
     }
@@ -292,7 +347,7 @@
         if (c.alive && (c.sinceBest > STUCK_STEPS || c.progress < -10)) c.alive = false;
         if (c.alive) any = true;
       }
-      if (!any || this.step >= MAX_STEPS) { this.evolve(); return true; }
+      if (!any || this.step >= this.track.maxSteps) { this.evolve(); return true; }
       return false;
     }
 
@@ -337,7 +392,7 @@
 
   const RaceSim = {
     WORLD_W, WORLD_H, N, HALF_W, CAR_L, CAR_W, RAY_ANGLES, RAY_LEN, MAX_V, LAYERS, LAPS, MAX_STEPS,
-    makeTrack, Car, World, NeuralNet, mulberry32
+    makeTrack, trackFromCtrl, validateTrack, Car, World, NeuralNet, mulberry32
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = RaceSim;

@@ -24,6 +24,14 @@
   let showRays = true;
   let shuffle = false;
 
+  // sticky = Hinweis bleibt ein paar Sekunden stehen (statt vom Live-Status überschrieben zu werden)
+  let stickyUntil = 0;
+  function msg(t, sticky) {
+    if (!sticky && performance.now() < stickyUntil) return;
+    if (sticky) stickyUntil = performance.now() + 4000;
+    $('msg').textContent = t;
+  }
+
   // ─── Rennmodus (Spieler gegen Champion) ───
   let race = null;
   const keys = { left: false, right: false, gas: false, brake: false };
@@ -36,9 +44,18 @@
     ctx.closePath();
   }
 
-  function drawTrack(tr) {
+  function drawTrack(tr, opt = {}) {
     ctx.fillStyle = COL.bg;
     ctx.fillRect(0, 0, S.WORLD_W, S.WORLD_H);
+    if (opt.grid) {
+      ctx.strokeStyle = 'rgba(147,151,171,0.08)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = 40; x < S.WORLD_W; x += 40) { ctx.moveTo(x, 0); ctx.lineTo(x, S.WORLD_H); }
+      for (let y = 40; y < S.WORLD_H; y += 40) { ctx.moveTo(0, y); ctx.lineTo(S.WORLD_W, y); }
+      ctx.stroke();
+    }
+    if (!tr) return;
     // Asphalt = Fläche zwischen den Wänden (evenodd)
     ctx.beginPath();
     for (const w of [tr.left, tr.right]) {
@@ -49,7 +66,7 @@
     ctx.fillStyle = COL.asphalt;
     ctx.fill('evenodd');
     ctx.lineWidth = 2;
-    ctx.strokeStyle = COL.wall;
+    ctx.strokeStyle = opt.wall || COL.wall;
     poly(tr.left); ctx.stroke();
     poly(tr.right); ctx.stroke();
     // Mittellinie gestrichelt
@@ -223,13 +240,314 @@
       (world.champion ? '' : '   (Tipp: erst ein paar Generationen trainieren!)'));
   }
 
+  // ─── Strecken-Editor ───
+  const TRACKS_KEY = 'ki-rennen-strecken';
+  // Trefferradius ~20 Bildschirm-Pixel (am Handy ist die Leinwand stark verkleinert)
+  const scale = () => cv.width / (cv.getBoundingClientRect().width || cv.width);
+  const hitR = () => Math.max(16, 20 * scale());
+  const DRAW_STEP = 45;      // Freihand: alle 45 px ein neuer Punkt
+  let edit = null;           // { pts, halfW, undo, drag, track, error, erase }
+
+  function canvasPos(e) {
+    const r = cv.getBoundingClientRect();
+    const x = (e.clientX - r.left) * cv.width / r.width, y = (e.clientY - r.top) * cv.height / r.height;
+    return [Math.max(0, Math.min(S.WORLD_W, x)), Math.max(0, Math.min(S.WORLD_H, y))];
+  }
+
+  function startEditor() {
+    race = null;
+    document.body.classList.remove('racing');
+    document.body.classList.add('editing');
+    stickyUntil = 0;
+    edit = { pts: world.track.ctrl.map((p) => [p[0], p[1]]), halfW: world.track.halfW, undo: [], drag: null, erase: false };
+    $('width').value = edit.halfW;
+    $('v-width').textContent = edit.halfW * 2 + ' px';
+    $('erase').checked = false;
+    rebuild(true);
+    refreshTrackList();
+  }
+
+  function stopEditor() {
+    edit = null;
+    document.body.classList.remove('editing');
+  }
+
+  function snapshot() {
+    edit.undo.push(edit.pts.map((p) => p.slice()));
+    if (edit.undo.length > 200) edit.undo.shift();
+  }
+
+  /** Strecke aus den Punkten neu bauen; validate = auf Fehler prüfen (teuer, nicht beim Ziehen) */
+  function rebuild(validate) {
+    edit.track = edit.pts.length >= 3 ? S.trackFromCtrl(edit.pts, edit.halfW) : null;
+    if (validate) edit.error = edit.track ? S.validateTrack(edit.track) : 'Mindestens 3 Punkte setzen.';
+    $('b-apply').disabled = !!edit.error;
+    $('b-tsave').disabled = !!edit.error;
+    $('b-share').disabled = !!edit.error;
+    if (edit.error) msg('⚠️ ' + edit.error);
+    else msg(`✓ Strecke ok — ${edit.pts.length} Punkte, Länge ca. ${Math.round(edit.track.n * 8 / 10) * 10} px`);
+  }
+
+  function hitPoint(p) {
+    const R = hitR();
+    let best = -1, bd = R * R;
+    edit.pts.forEach((q, i) => {
+      const d = (q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2;
+      if (d < bd) { bd = d; best = i; }
+    });
+    return best;
+  }
+
+  // Abstand Punkt -> Strecke a-b
+  function segDist(p, a, b) {
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / ((dx * dx + dy * dy) || 1)));
+    return Math.hypot(a[0] + dx * t - p[0], a[1] + dy * t - p[1]);
+  }
+
+  function hitLine(p) {
+    const n = edit.pts.length;
+    if (n < 3) return -1;
+    let best = -1, bd = hitR();
+    for (let i = 0; i < n; i++) {
+      const d = segDist(p, edit.pts[i], edit.pts[(i + 1) % n]);
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+  }
+
+  function deletePoint(i) {
+    snapshot();
+    edit.pts.splice(i, 1);
+    rebuild(true);
+  }
+
+  cv.addEventListener('pointerdown', (e) => {
+    if (!edit) return;
+    e.preventDefault();
+    const p = canvasPos(e);
+    const i = hitPoint(p);
+    if (edit.erase) { if (i >= 0) deletePoint(i); return; }
+    cv.setPointerCapture(e.pointerId);
+    snapshot();
+    if (i >= 0) {
+      edit.drag = { type: 'move', i, moved: false };
+    } else {
+      const seg = hitLine(p);
+      if (seg >= 0) {                                   // auf die Linie geklickt: Punkt einfügen
+        edit.pts.splice(seg + 1, 0, p);
+        edit.drag = { type: 'move', i: seg + 1, moved: true };
+      } else {                                          // freie Fläche: Punkt anhängen / freihand zeichnen
+        edit.pts.push(p);
+        edit.drag = { type: 'draw', last: p, moved: true };
+      }
+      rebuild(false);
+    }
+  });
+
+  cv.addEventListener('pointermove', (e) => {
+    if (!edit) return;
+    const p = canvasPos(e);
+    if (!edit.drag) {
+      cv.style.cursor = edit.erase ? (hitPoint(p) >= 0 ? 'pointer' : 'default')
+        : hitPoint(p) >= 0 ? 'grab' : hitLine(p) >= 0 ? 'copy' : 'crosshair';
+      return;
+    }
+    const d = edit.drag;
+    if (d.type === 'move') {
+      edit.pts[d.i] = p;
+      d.moved = true;
+      rebuild(false);
+    } else if (Math.hypot(p[0] - d.last[0], p[1] - d.last[1]) > DRAW_STEP) {
+      edit.pts.push(p);
+      d.last = p;
+      rebuild(false);
+    }
+  });
+
+  function endDrag() {
+    if (!edit || !edit.drag) return;
+    if (!edit.drag.moved) edit.undo.pop();          // nur angeklickt, nichts geändert
+    edit.drag = null;
+    rebuild(true);
+  }
+  cv.addEventListener('pointerup', endDrag);
+  cv.addEventListener('pointercancel', endDrag);
+  cv.addEventListener('dblclick', (e) => {
+    if (!edit || edit.erase) return;
+    const i = hitPoint(canvasPos(e));
+    if (i >= 0) deletePoint(i);
+  });
+  cv.addEventListener('contextmenu', (e) => {           // Rechtsklick auf Punkt = löschen
+    if (!edit) return;
+    e.preventDefault();
+    const i = hitPoint(canvasPos(e));
+    if (i >= 0) deletePoint(i);
+  });
+
+  function editFrame() {
+    const bad = !!edit.error && !edit.drag;
+    drawTrack(edit.track, { grid: true, wall: bad ? COL.neg : COL.wall });
+    const pts = edit.pts, n = pts.length;
+    if (n) {
+      // Kontroll-Polygon
+      ctx.setLineDash([3, 6]);
+      ctx.strokeStyle = 'rgba(210,206,253,0.35)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      pts.forEach((q, i) => (i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])));
+      if (n >= 3) ctx.closePath();
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Fahrtrichtung am Start
+      if (edit.track) {
+        const a = edit.track.center[0], b = edit.track.center[3];
+        const ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
+        ctx.save();
+        ctx.translate(a[0], a[1]);
+        ctx.rotate(ang);
+        ctx.fillStyle = COL.pos;
+        ctx.beginPath(); ctx.moveTo(34, 0); ctx.lineTo(18, -9); ctx.lineTo(18, 9); ctx.closePath(); ctx.fill();
+        ctx.restore();
+      }
+      // Punkte
+      const k = Math.max(1, scale() * 0.6);         // Punkte am Handy grösser zeichnen
+      ctx.font = `${Math.round(11 * k)}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      pts.forEach((q, i) => {
+        ctx.fillStyle = i === 0 ? COL.pos : COL.car;
+        ctx.beginPath(); ctx.arc(q[0], q[1], (i === 0 ? 9 : 7) * k, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#10111b'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = '#10111b';
+        ctx.fillText(i === 0 ? 'S' : String(i + 1), q[0], q[1] + 4 * k);
+      });
+      ctx.textAlign = 'left';
+    } else {
+      ctx.fillStyle = '#9397ab';
+      ctx.font = '22px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Klicke Punkte oder zeichne mit gedrückter Maus eine Runde', S.WORLD_W / 2, S.WORLD_H / 2);
+      ctx.textAlign = 'left';
+    }
+  }
+
+  // ── Meine Strecken (Browser-Speicher) + Teilen per Link ──
+  function loadTracks() {
+    try { return JSON.parse(localStorage.getItem(TRACKS_KEY)) || []; } catch (_) { return []; }
+  }
+  function storeTracks(list) {
+    try { localStorage.setItem(TRACKS_KEY, JSON.stringify(list)); return true; } catch (_) { return false; }
+  }
+  function refreshTrackList() {
+    const sel = $('my-tracks'), list = loadTracks();
+    sel.innerHTML = '';
+    if (!list.length) sel.add(new Option('— noch keine gespeichert —', ''));
+    list.forEach((t, i) => sel.add(new Option(t.name, i)));
+  }
+  const roundPts = (pts) => pts.map((p) => [Math.round(p[0]), Math.round(p[1])]);
+
+  function encodeTrack(halfW, pts) {
+    return btoa(JSON.stringify({ w: halfW, p: roundPts(pts) }));
+  }
+  function decodeTrack(code) {
+    try {
+      const o = JSON.parse(atob(code));
+      if (!Array.isArray(o.p) || o.p.length < 3 || !o.p.every((q) => Array.isArray(q) && q.length === 2 && q.every(Number.isFinite))) return null;
+      const w = Math.max(14, Math.min(60, +o.w || S.HALF_W));
+      const tr = S.trackFromCtrl(o.p, w);
+      return S.validateTrack(tr) ? null : tr;
+    } catch (_) { return null; }
+  }
+
+  $('b-edit').addEventListener('click', startEditor);
+  $('b-cancel').addEventListener('click', stopEditor);
+  $('b-apply').addEventListener('click', () => {
+    if (!edit || edit.error) return;
+    world.setTrack(S.trackFromCtrl(edit.pts, edit.halfW));
+    world.bestEver = 0;          // Rekord gilt pro Strecke
+    world.history = [];
+    stopEditor();
+    msg('🏁 Neue Strecke übernommen — die KI lernt jetzt darauf.', true);
+  });
+  $('b-undo').addEventListener('click', () => {
+    if (!edit || !edit.undo.length) return;
+    edit.pts = edit.undo.pop();
+    rebuild(true);
+  });
+  $('b-clear').addEventListener('click', () => { snapshot(); edit.pts = []; rebuild(true); });
+  $('b-random').addEventListener('click', () => {
+    snapshot();
+    const tr = S.makeTrack((Math.random() * 1e9) >>> 0);
+    edit.pts = tr.ctrl;
+    rebuild(true);
+  });
+  $('b-reverse').addEventListener('click', () => {
+    if (edit.pts.length < 2) return;
+    snapshot();
+    edit.pts = [edit.pts[0], ...edit.pts.slice(1).reverse()];
+    rebuild(true);
+  });
+  $('width').addEventListener('input', (e) => {
+    edit.halfW = +e.target.value;
+    $('v-width').textContent = edit.halfW * 2 + ' px';
+    rebuild(false);
+  });
+  $('width').addEventListener('change', () => rebuild(true));
+  $('erase').addEventListener('change', (e) => { edit.erase = e.target.checked; });
+  $('b-tsave').addEventListener('click', () => {
+    if (!edit || edit.error) return;
+    const list = loadTracks();
+    const name = (prompt('Name der Strecke:', 'Meine Strecke ' + (list.length + 1)) || '').trim();
+    if (!name) return;
+    const entry = { name: name.slice(0, 40), w: edit.halfW, p: roundPts(edit.pts) };
+    const at = list.findIndex((t) => t.name === entry.name);
+    if (at >= 0) list[at] = entry; else list.push(entry);
+    msg(storeTracks(list) ? `💾 „${entry.name}“ gespeichert.` : 'Speichern nicht möglich (Browser-Speicher blockiert).');
+    refreshTrackList();
+    $('my-tracks').value = String(at >= 0 ? at : list.length - 1);
+  });
+  $('b-tload').addEventListener('click', () => {
+    const t = loadTracks()[+$('my-tracks').value];
+    if (!t || $('my-tracks').value === '') return;
+    snapshot();
+    edit.pts = t.p.map((q) => q.slice());
+    edit.halfW = t.w;
+    $('width').value = t.w;
+    $('v-width').textContent = t.w * 2 + ' px';
+    rebuild(true);
+  });
+  $('b-tdel').addEventListener('click', () => {
+    const i = $('my-tracks').value;
+    if (i === '') return;
+    const list = loadTracks();
+    if (!list[+i] || !confirm(`„${list[+i].name}“ löschen?`)) return;
+    list.splice(+i, 1);
+    storeTracks(list);
+    refreshTrackList();
+  });
+  $('b-share').addEventListener('click', () => {
+    if (!edit || edit.error) return;
+    const url = location.href.split('#')[0] + '#strecke=' + encodeURIComponent(encodeTrack(edit.halfW, edit.pts));
+    const done = () => msg('🔗 Link kopiert — wer ihn öffnet, bekommt deine Strecke.');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(done, () => prompt('Link zum Kopieren:', url));
+    } else prompt('Link zum Kopieren:', url);
+  });
+
+  // Strecke aus geteiltem Link übernehmen
+  const shared = /#strecke=([^&]+)/.exec(location.hash);
+  if (shared) {
+    const tr = decodeTrack(decodeURIComponent(shared[1]));
+    if (tr) { world.setTrack(tr); msg('🔗 Geteilte Strecke geladen.', true); }
+    else msg('⚠️ Der Strecken-Link ist ungültig.', true);
+  }
+
   // ─── Schleife ───
   function frame() {
-    if (race) raceFrame(); else trainFrame();
+    if (edit) editFrame(); else if (race) raceFrame(); else trainFrame();
     requestAnimationFrame(frame);
   }
 
-  function msg(t) { $('msg').textContent = t; }
 
   // ─── Bedienung ───
   $('speed').addEventListener('input', (e) => { speed = +e.target.value; $('v-speed').textContent = speed + '×'; });
@@ -241,21 +559,20 @@
   $('shuffle').addEventListener('change', (e) => { shuffle = e.target.checked; });
   $('b-track').addEventListener('click', newTrack);
   $('b-reset').addEventListener('click', () => {
-    const seed = world.track.seed;
-    world = new S.World({ seed, mutationRate: $('mut').value / 100 });
+    world = new S.World({ track: world.track, mutationRate: $('mut').value / 100 });
   });
   $('b-save').addEventListener('click', () => {
     const best = world.champion || world.leader().brain;
-    try { localStorage.setItem(SAVE_KEY, JSON.stringify(best)); msg('💾 Bestes Netz gespeichert.'); }
-    catch (_) { msg('Speichern nicht möglich (Browser-Speicher blockiert).'); }
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify(best)); msg('💾 Bestes Netz gespeichert.', true); }
+    catch (_) { msg('Speichern nicht möglich (Browser-Speicher blockiert).', true); }
   });
   $('b-load').addEventListener('click', () => {
     let net = null;
     try { net = S.NeuralNet.fromJSON(JSON.parse(localStorage.getItem(SAVE_KEY))); } catch (_) { /* leer */ }
-    if (!net) { msg('Kein gespeichertes Netz gefunden.'); return; }
-    world = new S.World({ seed: world.track.seed, seedBrain: net, mutationRate: $('mut').value / 100 });
+    if (!net) { msg('Kein gespeichertes Netz gefunden.', true); return; }
+    world = new S.World({ track: world.track, seedBrain: net, mutationRate: $('mut').value / 100 });
     world.champion = net.clone();
-    msg('📂 Gespeichertes Netz geladen — es fährt in der neuen Generation mit.');
+    msg('📂 Gespeichertes Netz geladen — es fährt in der neuen Generation mit.', true);
   });
   $('b-race').addEventListener('click', startRace);
   $('b-again').addEventListener('click', startRace);
