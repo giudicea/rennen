@@ -19,8 +19,8 @@
   const HALF_W = 34;           // halbe Streckenbreite
   const CAR_L = 18, CAR_W = 9;
   const RAY_ANGLES = [-90, -45, -20, 0, 20, 45, 90].map((d) => d * Math.PI / 180);
-  const RAY_LEN = 220;
-  const MAX_V = 8;
+  const RAY_LEN = 500;
+  const MAX_V = 20;
   const LAYERS = [RAY_ANGLES.length + 1, 10, 6, 2];
   const LAPS = 3;
   const STUCK_STEPS = 120;     // so lange ohne Fortschritt -> ausgeschieden
@@ -377,8 +377,8 @@
       steer = Math.max(-1, Math.min(1, steer));
       throttle = Math.max(-1, Math.min(1, throttle));
       this.out = [steer, throttle];
-      this.a += steer * 0.07 * Math.min(1, this.v / 2.5);
-      this.v += throttle > 0 ? throttle * 0.22 : throttle * 0.4;
+      this.a += steer * 0.1 * Math.min(1, this.v / 2.5);
+      this.v += throttle > 0 ? throttle * 0.4 : throttle * 0.5;
       this.v *= 0.985;
       if (this.v < 0) this.v = 0;
       if (this.v > MAX_V) this.v = MAX_V;
@@ -461,9 +461,9 @@
   // ─── Population + Evolution ───
   class World {
     constructor(opts = {}) {
-      this.popSize = opts.popSize || 60;
-      this.mutationRate = opts.mutationRate ?? 0.1;
-      this.mutationStrength = opts.mutationStrength ?? 0.5;
+      this.popSize = opts.popSize || 500;
+      this.mutationRate = opts.mutationRate ?? 0.13;
+      this.mutationStrength = opts.mutationStrength ?? 0.55;
       this.rnd = opts.rnd || Math.random;
       this.track = opts.track || makeTrack(opts.seed ?? 1);
       this.generation = 1;
