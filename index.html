@@ -65,8 +65,8 @@
     </div>
     <div class="msg" id="msg"></div>
     <p class="text-muted legend train-only no-edit">
-      Jedes Auto ist ein eigenes neuronales Netz (8 Eingaben → 10 → 6 → 2 Ausgaben).
-      Eingaben: 7 Abstands-Sensoren + Tempo. Ausgaben: Lenkung und Gas/Bremse.
+      Jedes Auto ist ein eigenes neuronales Netz (<span id="net-info">8 Eingaben → 10 → 6 → 2 Ausgaben</span>).
+      Eingaben: <span id="sensor-info">7 Abstands-Sensoren nach vorne</span> + Tempo. Ausgaben: Lenkung und Gas/Bremse.
       Wer die Wand berührt, scheidet aus. Die besten Fahrer werden gekreuzt und
       mutiert — so wird jede Generation besser.
     </p>
@@ -149,6 +149,12 @@
           <input type="range" id="speed" min="1" max="40" value="1"></label>
         <label>Mutationsrate: <span id="v-mut">10 %</span>
           <input type="range" id="mut" min="1" max="50" value="10"></label>
+        <label>Sensoren
+          <select id="sensors">
+            <option value="7">👀 Standard: 7 Strahlen nach vorne</option>
+            <option value="16">📡 LiDAR 360°: 16 Strahlen</option>
+            <option value="32">📡 LiDAR 360°: 32 Strahlen</option>
+          </select></label>
         <label class="check"><input type="checkbox" id="rays" checked> Sensoren anzeigen</label>
         <label class="check"><input type="checkbox" id="shuffle"> Jede Generation neue Strecke (lernt allgemeiner)</label>
         <div class="btns">
@@ -168,8 +174,8 @@
   </aside>
 </main>
 
-<script src="nn.js?v=3"></script>
-<script src="sim.js?v=3"></script>
-<script src="rennen.js?v=3"></script>
+<script src="nn.js?v=4"></script>
+<script src="sim.js?v=4"></script>
+<script src="rennen.js?v=4"></script>
 </body>
 </html>

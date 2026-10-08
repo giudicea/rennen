@@ -19,6 +19,25 @@
   const HALF_W = 34;           // halbe Streckenbreite
   const CAR_L = 18, CAR_W = 9;
   const RAY_ANGLES = [-90, -45, -20, 0, 20, 45, 90].map((d) => d * Math.PI / 180);
+  const SENSOR_MODES = [7, 16, 32];     // 7 = Standard (vorne), sonst LiDAR 360°
+
+  /** Sensor-Richtungen: 7 = Fächer nach vorne, sonst gleichmässig rundherum (LiDAR) */
+  const angleCache = {};
+  function rayAngles(count) {
+    if (count === RAY_ANGLES.length) return RAY_ANGLES;
+    if (!angleCache[count]) {
+      // bei 0 (geradeaus) beginnen, dann im Uhrzeigersinn einmal rundherum
+      angleCache[count] = Array.from({ length: count }, (_, i) => {
+        const a = (i / count) * Math.PI * 2;
+        return a > Math.PI ? a - Math.PI * 2 : a;
+      });
+    }
+    return angleCache[count];
+  }
+  /** Netzform je Sensoranzahl: Eingaben = Sensoren + Tempo */
+  function layersFor(count) {
+    return count > RAY_ANGLES.length ? [count + 1, 14, 8, 2] : [count + 1, 10, 6, 2];
+  }
   const RAY_LEN = 500;
   const MAX_V = 20;
   const LAYERS = [RAY_ANGLES.length + 1, 10, 6, 2];
@@ -278,6 +297,8 @@
     return d < 0 ? -1 : d / 8;
   };
 
+  const SEG_BUF = new Float64Array(80 * 2 * 4);
+
   // ─── Auto ───
   class Car {
     constructor(track, brain) {
@@ -306,7 +327,9 @@
       this.finished = false;
       this.finishStep = 0;
       this.crashed = false;
-      this.rays = new Float64Array(RAY_ANGLES.length).fill(1);
+      // Sensor-Richtungen ergeben sich aus der Eingabegrösse des Netzes
+      this.angles = rayAngles(this.brain ? this.brain.sizes[0] - 1 : RAY_ANGLES.length);
+      this.rays = new Float64Array(this.angles.length).fill(1);
       this.out = [0, 0];
     }
 
@@ -326,8 +349,21 @@
     }
 
     sense(track) {
-      for (let r = 0; r < RAY_ANGLES.length; r++) {
-        const ang = this.a + RAY_ANGLES[r];
+      const angles = this.angles;
+      // Vektor-Strecke: Wandstücke in der Nähe einmal sammeln, dann für alle Strahlen prüfen
+      let segs = null, ns = 0;
+      if (!track.road) {
+        const back = angles.length > RAY_ANGLES.length ? -32 : -15;
+        segs = SEG_BUF;
+        for (let d = back; d <= 40; d++) {
+          const i = mod(this.idx + d, track.n), j = (i + 1) % track.n;
+          for (const wall of [track.left, track.right]) {
+            segs[ns++] = wall[i][0]; segs[ns++] = wall[i][1]; segs[ns++] = wall[j][0]; segs[ns++] = wall[j][1];
+          }
+        }
+      }
+      for (let r = 0; r < angles.length; r++) {
+        const ang = this.a + angles[r];
         const ex = this.x + Math.cos(ang) * RAY_LEN, ey = this.y + Math.sin(ang) * RAY_LEN;
         let best = 1;
         if (track.road) {
@@ -338,12 +374,9 @@
           this.rays[r] = best;
           continue;
         }
-        for (let d = -15; d <= 40; d++) {
-          const i = mod(this.idx + d, track.n), j = (i + 1) % track.n;
-          for (const wall of [track.left, track.right]) {
-            const t = segHit(this.x, this.y, ex, ey, wall[i][0], wall[i][1], wall[j][0], wall[j][1]);
-            if (t >= 0 && t < best) best = t;
-          }
+        for (let k = 0; k < ns; k += 4) {
+          const t = segHit(this.x, this.y, ex, ey, segs[k], segs[k + 1], segs[k + 2], segs[k + 3]);
+          if (t >= 0 && t < best) best = t;
         }
         this.rays[r] = best;
       }
@@ -465,13 +498,16 @@
       this.mutationRate = opts.mutationRate ?? 0.13;
       this.mutationStrength = opts.mutationStrength ?? 0.55;
       this.rnd = opts.rnd || Math.random;
+      // Anzahl Sensoren: aus einem mitgegebenen Netz, sonst Option (Standard 7)
+      this.rays = opts.seedBrain ? opts.seedBrain.sizes[0] - 1 : (opts.rays || RAY_ANGLES.length);
+      this.layers = opts.seedBrain ? opts.seedBrain.sizes.slice() : layersFor(this.rays);
       this.track = opts.track || makeTrack(opts.seed ?? 1);
       this.generation = 1;
       this.bestEver = 0;
       this.champion = null;   // bestes Netz bisher
       this.history = [];      // beste Fitness je Generation
       this.cars = [];
-      for (let i = 0; i < this.popSize; i++) this.cars.push(new Car(this.track, new NeuralNet(LAYERS, null, this.rnd)));
+      for (let i = 0; i < this.popSize; i++) this.cars.push(new Car(this.track, new NeuralNet(this.layers, null, this.rnd)));
       if (opts.seedBrain) this.cars[0].brain = opts.seedBrain.clone();
       this.step = 0;
     }
@@ -536,7 +572,7 @@
       while (next.length < this.popSize) {
         const r = this.rnd();
         let child;
-        if (r < 0.1) child = new NeuralNet(LAYERS, null, this.rnd);                       // frisches Blut
+        if (r < 0.1) child = new NeuralNet(this.layers, null, this.rnd);                      // frisches Blut
         else if (r < 0.55) child = pick().clone();
         else child = NeuralNet.crossover(pick(), pick(), this.rnd);
         child.mutate(this.mutationRate, this.mutationStrength, this.rnd);
@@ -549,7 +585,7 @@
   }
 
   const RaceSim = {
-    WORLD_W, WORLD_H, N, HALF_W, CAR_L, CAR_W, RAY_ANGLES, RAY_LEN, MAX_V, LAYERS, LAPS, MAX_STEPS,
+    WORLD_W, WORLD_H, N, HALF_W, CAR_L, CAR_W, RAY_ANGLES, SENSOR_MODES, rayAngles, layersFor, RAY_LEN, MAX_V, LAYERS, LAPS, MAX_STEPS,
     makeTrack, trackFromCtrl, validateTrack, trackFromPixels, pixelKind, Car, World, NeuralNet, mulberry32
   };
 

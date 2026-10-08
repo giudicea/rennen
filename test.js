@@ -40,3 +40,13 @@ while (w3.generation <= 25) w3.tick();
 console.log('Bild-Strecke, beste Fitness:', w3.history.slice(-5).join(' '));
 if (!w3.lastBest.finished) { console.error('FEHLER: KI schafft die Bild-Strecke nicht'); process.exit(1); }
 console.log('OK – Bild-Strecken (Paint) funktionieren, die KI lernt darauf.');
+
+// LiDAR 360°: Netzform passt sich an, Sensoren zeigen rundherum, KI lernt
+const wl = new S.World({ seed: 1, rays: 16, rnd: S.mulberry32(4) });
+const ang = wl.cars[0].angles;
+if (wl.layers[0] !== 17 || ang.length !== 16 || !ang.some((a) => Math.abs(a) > Math.PI * 0.9)) {
+  console.error('FEHLER: LiDAR-Sensoren falsch eingerichtet'); process.exit(1);
+}
+while (wl.generation <= 30) wl.tick();
+if (!wl.lastBest.finished) { console.error('FEHLER: KI lernt mit LiDAR nicht'); process.exit(1); }
+console.log('OK – LiDAR 360° (16 Strahlen) lernt ebenfalls.');

@@ -8,7 +8,8 @@ einfach `index.html` im Browser öffnen.
 
 - **60 Autos**, jedes mit einem eigenen neuronalen Netz (Feed-Forward,
   8 → 10 → 6 → 2, tanh)
-- **Eingaben:** 7 Abstands-Sensoren (Strahlen von −90° bis +90°) + Tempo
+- **Eingaben:** 7 Abstands-Sensoren (Strahlen von −90° bis +90°) + Tempo —
+  oder umschaltbar ein **📡 LiDAR 360°** mit 16 bzw. 32 Strahlen rundherum
 - **Ausgaben:** Lenkung und Gas/Bremse
 - **Lernen:** Wer die Wand berührt oder nicht vorankommt, scheidet aus. Nach
   jeder Generation werden die besten Fahrer (Elite + Turnier-Auswahl)
@@ -28,6 +29,23 @@ einfach `index.html` im Browser öffnen.
 - Zufällige Strecken, optional jede Generation eine neue (lernt allgemeiner)
 - Bestes Netz im Browser **speichern/laden**
 - **🏁 Gegen die KI fahren** — Pfeiltasten/WASD oder Touch-Tasten am Handy
+
+## 📡 Standard-Sensoren oder LiDAR 360°?
+
+Unter **Sensoren** lässt sich umschalten. Ein Vergleich (je 6 Trainingsläufe à
+40 Generationen, danach Test auf 5 unbekannten Strecken):
+
+| Sensoren | erstes Mal im Ziel (Generation) | unbekannte Strecken geschafft | Rechenzeit |
+| --- | --- | --- | --- |
+| 👀 7 nach vorne | 3–9 | **26 / 30** | 1× |
+| 📡 LiDAR 16 | 2–13 | 7 / 30 | ~1,7× |
+| 📡 LiDAR 32 | 1–11 | 8 / 30 | ~3,5× |
+
+Die eigene Strecke lernt LiDAR genauso schnell. Weil das Netz aber viel mehr
+Eingaben hat, lernt es die Strecke eher **auswendig**, statt allgemein fahren zu
+lernen. Mit **„Jede Generation neue Strecke“** (60 Generationen) wird es
+deutlich besser: 7 Sensoren 17/20, LiDAR 16 12/20, LiDAR 32 10/20.
+Ausprobieren lohnt sich trotzdem — vor allem auf engen, verwinkelten Strecken.
 
 ## 🎨 Strecken in Paint malen
 

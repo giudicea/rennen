@@ -113,8 +113,8 @@
     if (rays) {
       ctx.strokeStyle = COL.ray;
       ctx.lineWidth = 1;
-      for (let r = 0; r < S.RAY_ANGLES.length; r++) {
-        const a = c.a + S.RAY_ANGLES[r], d = c.rays[r] * S.RAY_LEN;
+      for (let r = 0; r < c.angles.length; r++) {
+        const a = c.a + c.angles[r], d = c.rays[r] * S.RAY_LEN;
         const ex = c.x + Math.cos(a) * d, ey = c.y + Math.sin(a) * d;
         ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(ex, ey); ctx.stroke();
         ctx.fillStyle = COL.ray;
@@ -157,15 +157,25 @@
       }
     }
     nctx.globalAlpha = 1;
-    const inNames = ['←90°', '←45°', '←20°', '↑', '→20°', '→45°', '→90°', 'Tempo'];
+    const nIn = L[0] - 1;
+    let inNames;
+    if (nIn === S.RAY_ANGLES.length) inNames = ['←90°', '←45°', '←20°', '↑', '→20°', '→45°', '→90°', 'Tempo'];
+    else {
+      // LiDAR: Winkel beschriften, bei vielen Strahlen nur jeden zweiten/vierten
+      const step = nIn > 16 ? 4 : 2;
+      inNames = S.rayAngles(nIn).map((a, i) => (i % step ? '' : Math.round(a * 180 / Math.PI) + '°'));
+      inNames.push('Tempo');
+    }
     const outNames = ['Lenkung', 'Gas'];
-    nctx.font = '18px system-ui, sans-serif';
+    const maxN = Math.max(...L);
+    const rad = Math.max(3, Math.min(9, (H - 2 * padY) / maxN / 2.3));   // Kreise bei vielen Neuronen kleiner
+    nctx.font = `${maxN > 20 ? 14 : 18}px system-ui, sans-serif`;
     for (let l = 0; l < L.length; l++) {
       for (let i = 0; i < L[l]; i++) {
         const [x, y] = pos[l][i], a = net.act[l][i];
         nctx.fillStyle = a >= 0 ? `rgba(145,132,217,${0.25 + 0.75 * Math.min(1, a)})`
                                 : `rgba(235,87,87,${0.25 + 0.75 * Math.min(1, -a)})`;
-        nctx.beginPath(); nctx.arc(x, y, 9, 0, Math.PI * 2); nctx.fill();
+        nctx.beginPath(); nctx.arc(x, y, rad, 0, Math.PI * 2); nctx.fill();
         nctx.strokeStyle = '#e9e9ed'; nctx.lineWidth = 1; nctx.stroke();
         nctx.fillStyle = '#9397ab';
         if (l === 0) { nctx.textAlign = 'right'; nctx.fillText(inNames[i] || '', x - 14, y + 6); }
@@ -196,8 +206,11 @@
   function newTrack() { world.setTrack((Math.random() * 1e9) >>> 0); }
 
   function trainFrame() {
+    // höchstens ~14 ms pro Bild rechnen, damit die Seite flüssig bleibt (LiDAR braucht mehr Rechenzeit)
+    const t0 = performance.now();
     for (let s = 0; s < speed; s++) {
       if (world.tick() && shuffle) newTrack();
+      if (performance.now() - t0 > 14) break;
     }
     drawTrack(world.track);
     const lead = world.leader();
@@ -691,8 +704,22 @@
   $('rays').addEventListener('change', (e) => { showRays = e.target.checked; });
   $('shuffle').addEventListener('change', (e) => { shuffle = e.target.checked; });
   $('b-track').addEventListener('click', newTrack);
+  function updateNetInfo() {
+    const L = world.layers;
+    $('net-info').textContent = `${L[0]} Eingaben → ${L.slice(1, -1).join(' → ')} → ${L[L.length - 1]} Ausgaben`;
+    $('sensor-info').textContent = world.rays === S.RAY_ANGLES.length
+      ? '7 Abstands-Sensoren nach vorne'
+      : `LiDAR: ${world.rays} Strahlen rundherum (360°)`;
+  }
   $('b-reset').addEventListener('click', () => {
-    world = new S.World({ track: world.track, mutationRate: $('mut').value / 100 });
+    world = new S.World({ track: world.track, rays: world.rays, mutationRate: $('mut').value / 100 });
+  });
+  $('sensors').addEventListener('change', (e) => {
+    world = new S.World({ track: world.track, rays: +e.target.value, mutationRate: $('mut').value / 100 });
+    updateNetInfo();
+    msg(+e.target.value === S.RAY_ANGLES.length
+      ? '👀 Standard-Sensoren — neue Generation 1.'
+      : `📡 LiDAR mit ${e.target.value} Strahlen — neue Generation 1. Tipp: „Jede Generation neue Strecke“ einschalten.`, true);
   });
   $('b-save').addEventListener('click', () => {
     const best = world.champion || world.leader().brain;
@@ -705,6 +732,8 @@
     if (!net) { msg('Kein gespeichertes Netz gefunden.', true); return; }
     world = new S.World({ track: world.track, seedBrain: net, mutationRate: $('mut').value / 100 });
     world.champion = net.clone();
+    if ([...$('sensors').options].some((o) => +o.value === world.rays)) $('sensors').value = world.rays;
+    updateNetInfo();
     msg('📂 Gespeichertes Netz geladen — es fährt in der neuen Generation mit.', true);
   });
   $('b-race').addEventListener('click', startRace);
@@ -733,5 +762,6 @@
     b.addEventListener('pointercancel', off);
   }
 
+  updateNetInfo();
   requestAnimationFrame(frame);
 })();
