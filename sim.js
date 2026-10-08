@@ -108,14 +108,12 @@
         dense.push([f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]);
       }
     }
-    if (!n) {
-      let len = 0;
-      for (let i = 0; i < dense.length; i++) {
-        const a = dense[i], b = dense[(i + 1) % dense.length];
-        len += Math.hypot(b[0] - a[0], b[1] - a[1]);
-      }
-      n = Math.max(60, Math.min(800, Math.round(len / 8)));
+    let length = 0;
+    for (let i = 0; i < dense.length; i++) {
+      const a = dense[i], b = dense[(i + 1) % dense.length];
+      length += Math.hypot(b[0] - a[0], b[1] - a[1]);
     }
+    if (!n) n = Math.max(60, Math.min(800, Math.round(length / 8)));
     // Abstände gleichmässig machen (Resampling nach Bogenlänge)
     const pts = resample(dense, n);
     const left = [], right = [];
@@ -127,7 +125,9 @@
       right.push([pts[i][0] + ty * halfW, pts[i][1] - tx * halfW]);
     }
     return {
-      ctrl: ctrl.map((p) => [p[0], p[1]]), halfW, n, center: pts, left, right,
+      ctrl: ctrl.map((p) => [p[0], p[1]]), halfW, n, length, center: pts, left, right,
+      // so viele Mittellinien-Punkte reicht ein Sensorstrahl weit (für die Wandsuche)
+      rayReach: Math.min(Math.floor(n / 2), Math.ceil(RAY_LEN / (length / n)) + 4),
       maxSteps: Math.max(MAX_STEPS, n * LAPS * 4)
     };
   }
@@ -297,7 +297,7 @@
     return d < 0 ? -1 : d / 8;
   };
 
-  const SEG_BUF = new Float64Array(80 * 2 * 4);
+  let SEG_BUF = new Float64Array(0);
 
   // ─── Auto ───
   class Car {
@@ -353,9 +353,11 @@
       // Vektor-Strecke: Wandstücke in der Nähe einmal sammeln, dann für alle Strahlen prüfen
       let segs = null, ns = 0;
       if (!track.road) {
-        const back = angles.length > RAY_ANGLES.length ? -32 : -15;
+        // LiDAR sieht auch nach hinten, also in beide Richtungen so weit wie ein Strahl reicht
+        const fwd = track.rayReach, back = angles.length > RAY_ANGLES.length ? -fwd : -15;
+        if (SEG_BUF.length < (fwd - back + 1) * 8) SEG_BUF = new Float64Array((fwd - back + 1) * 8);
         segs = SEG_BUF;
-        for (let d = back; d <= 40; d++) {
+        for (let d = back; d <= fwd; d++) {
           const i = mod(this.idx + d, track.n), j = (i + 1) % track.n;
           for (const wall of [track.left, track.right]) {
             segs[ns++] = wall[i][0]; segs[ns++] = wall[i][1]; segs[ns++] = wall[j][0]; segs[ns++] = wall[j][1];
@@ -383,9 +385,15 @@
       return this.rays;
     }
 
-    hitsWall(track) {
+    /** Wandkontakt; ox/oy = vorherige Position, damit schnelle Autos nicht durch Wände springen */
+    hitsWall(track, ox = this.x, oy = this.y) {
       const c = this.corners();
       if (track.road) {
+        const steps = Math.floor(Math.hypot(this.x - ox, this.y - oy) / 2);
+        for (let k = 1; k < steps; k++) {
+          const t = k / steps;
+          if (!onRoad(track, ox + (this.x - ox) * t, oy + (this.y - oy) * t)) return true;
+        }
         for (let k = 0; k < 4; k++) {
           const p = c[k], q = c[(k + 1) % 4];
           if (!onRoad(track, p[0], p[1]) || !onRoad(track, (p[0] + q[0]) / 2, (p[1] + q[1]) / 2)) return true;
@@ -395,6 +403,7 @@
       for (let d = -6; d <= 6; d++) {
         const i = mod(this.idx + d, track.n), j = (i + 1) % track.n;
         for (const wall of [track.left, track.right]) {
+          if (segHit(ox, oy, this.x, this.y, wall[i][0], wall[i][1], wall[j][0], wall[j][1]) >= 0) return true;
           for (let k = 0; k < 4; k++) {
             const p = c[k], q = c[(k + 1) % 4];
             if (segHit(p[0], p[1], q[0], q[1], wall[i][0], wall[i][1], wall[j][0], wall[j][1]) >= 0) return true;
@@ -422,7 +431,7 @@
       if (track.road) this.progressRaster(track);
       else this.progressVector(track);
 
-      if (this.hitsWall(track)) {
+      if (this.hitsWall(track, ox, oy)) {
         if (bounce) this.bounce(track, ox, oy);
         else { this.alive = false; this.crashed = true; return; }
       }

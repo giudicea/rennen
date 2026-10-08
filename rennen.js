@@ -762,6 +762,9 @@
     b.addEventListener('pointercancel', off);
   }
 
+  // Regler auf die Startwerte aus sim.js setzen (falls dort geändert)
+  $('mut').value = Math.round(world.mutationRate * 100);
+  $('v-mut').textContent = $('mut').value + ' %';
   updateNetInfo();
   requestAnimationFrame(frame);
 })();
