@@ -23,6 +23,17 @@ einfach `index.html` im Browser öffnen.
   keine zu engen Kurven). Strecken lassen sich im Browser **speichern** und per
   **Link teilen** — wer den Link öffnet, hat sofort deine Strecke.
 - **🖼️ Strecken aus Bildern** — in Paint malen und laden (siehe unten)
+- **Regler** für Autos pro Generation (1–1000) und Runden bis ins Ziel (1–1000),
+  jeweils mit Zahlenfeld zum genauen Eintippen
+- **💥 Crash-Strafe** — Minuspunkte für Wandkontakt, je schneller desto mehr;
+  crasht eine Familie mehrere Generationen in Folge, wird die Strafe immer grösser
+- **🧬 Auslese** — nur die besten X % bekommen Nachwuchs; je kleiner, desto mehr
+  Linien sterben aus
+- **📊 Trainings-Daten** — jeder Lauf wird mit allen Werten und Ergebnissen im
+  Browser gespeichert (Generationen, erstes Mal im Ziel, Bestwert, Ø-Fitness,
+  Crash-Anteil, Bestzeit, Trainingszeit). Sortierbare Tabelle, Export als CSV
+  für Excel, und pro Zeile **▶ Weiter** (mit Werten + bestem Netz) oder
+  **↺ Neu** (gleiche Werte, frische Autos)
 
 - Live-Ansicht des **Netzes** des führenden Autos und Fitness-Verlauf
 - Regler für **Tempo** (bis 40×) und **Mutationsrate**

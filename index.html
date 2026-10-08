@@ -46,6 +46,17 @@
   .help li { margin-bottom: 2px; }
   .msg { font-size: 13px; margin-top: 8px; min-height: 1.4em; }
   .legend { font-size: 12px; }
+  .pair { display: flex; gap: 8px; align-items: center; }
+  .pair input[type=number] { width: 72px; font: inherit; font-size: 13px; color: var(--color-text);
+    background: var(--color-neutral-800); border: 0; border-radius: var(--radius-md); padding: 5px 6px; }
+  .logwrap { max-width: 1180px; margin: 0 auto; padding: 0 16px 24px; }
+  .loghead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .tablewrap { overflow-x: auto; }
+  #log-table { border-collapse: collapse; font-size: 12px; width: 100%; font-variant-numeric: tabular-nums; }
+  #log-table th, #log-table td { padding: 5px 7px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--color-divider); }
+  #log-table th { cursor: pointer; color: var(--color-accent-300); font-weight: 500; user-select: none; }
+  #log-table tr.cur td { background: color-mix(in srgb, var(--color-accent) 14%, transparent); }
+  #log-table td.act .btn { padding: 3px 7px; font-size: 12px; margin-right: 3px; }
 </style>
 </head>
 <body>
@@ -133,8 +144,15 @@
         <div>Am Fahren<b id="s-alive">0</b></div>
         <div>Beste (letzte Gen.)<b id="s-last">–</b></div>
         <div>Rekord<b id="s-rec">–</b></div>
+        <div>Ø Fitness<b id="s-avg">–</b></div>
+        <div>Crashes (letzte Gen.)<b id="s-crash">–</b></div>
+        <div>Im Ziel (letzte Gen.)<b id="s-fin">–</b></div>
+        <div>Erstes Mal im Ziel<b id="s-first">–</b></div>
+        <div>Bestzeit (bei 1×)<b id="s-time">–</b></div>
+        <div>Trainingszeit<b id="s-dur">0:00</b></div>
       </div>
       <canvas id="chart" width="560" height="120" style="margin-top:10px"></canvas>
+      <div class="text-muted legend"><span style="color:#9184d9">━ Bester</span> · <span style="color:#f2c94c">━ Durchschnitt</span> je Generation</div>
     </section>
 
     <section class="card no-edit">
@@ -147,8 +165,24 @@
       <div class="train-only ctl">
         <label>Tempo: <span id="v-speed">1×</span>
           <input type="range" id="speed" min="1" max="40" value="1"></label>
-        <label>Mutationsrate: <span id="v-mut">10 %</span>
-          <input type="range" id="mut" min="1" max="50" value="10"></label>
+        <label>Autos pro Generation
+          <span class="pair"><input type="range" id="cars" min="1" max="1000" value="500">
+          <input type="number" id="cars-n" min="1" max="1000" value="500" aria-label="Anzahl Autos"></span></label>
+        <label>Runden bis ins Ziel
+          <span class="pair"><input type="range" id="laps" min="1" max="1000" value="3">
+          <input type="number" id="laps-n" min="1" max="1000" value="3" aria-label="Anzahl Runden"></span></label>
+        <label>Mutationsrate: <span id="v-mut">13 %</span>
+          <input type="range" id="mut" min="1" max="50" value="13"></label>
+        <label>💥 Crash-Strafe: <span id="v-pen">2 Punkte je Tempo</span>
+          <input type="range" id="pen" min="0" max="50" value="2"></label>
+        <label>🧬 Auslese: <span id="v-sel">30 % dürfen Eltern werden</span>
+          <input type="range" id="sel" min="1" max="50" value="30"></label>
+        <p class="text-muted" style="font-size:12px;margin:0">
+          Crash-Strafe: Minuspunkte für Wandkontakt, je schneller desto mehr — und doppelt, dreifach …
+          wenn eine Familie mehrere Generationen in Folge crasht. Auslese: je kleiner, desto mehr
+          Linien sterben aus und nur die Besten der Besten bekommen Nachwuchs.
+          Stehenbleiben zählt wie ein Crash. Tipp: hohe Strafen machen die Autos vorsichtig, lernen aber langsamer.
+        </p>
         <label>Sensoren
           <select id="sensors">
             <option value="7">👀 Standard: 7 Strahlen nach vorne</option>
@@ -174,8 +208,26 @@
   </aside>
 </main>
 
-<script src="nn.js?v=4"></script>
-<script src="sim.js?v=4"></script>
-<script src="rennen.js?v=4"></script>
+<section class="logwrap no-edit">
+  <div class="card">
+    <div class="loghead">
+      <h2 style="margin:0">📊 Trainings-Daten <span class="text-muted" id="log-count" style="font-size:12px"></span></h2>
+      <div class="btns" style="margin-left:auto">
+        <button class="btn" id="b-log-csv">⬇ Als CSV (Excel)</button>
+        <button class="btn" id="b-log-clear">🗑 Alle löschen</button>
+      </div>
+    </div>
+    <p class="text-muted" style="font-size:12px;margin:6px 0 8px">
+      Jeder Lauf wird automatisch im Browser gespeichert — mit allen Werten und Ergebnissen.
+      Ein neuer Eintrag beginnt, wenn du Werte oder die Strecke änderst. Spaltenkopf anklicken zum Sortieren.
+      <b>▶ Weiter</b> = mit diesen Werten und dem besten Netz weitertrainieren, <b>↺ Neu</b> = mit diesen Werten neu anfangen.
+    </p>
+    <div class="tablewrap"><table id="log-table"></table></div>
+  </div>
+</section>
+
+<script src="nn.js?v=5"></script>
+<script src="sim.js?v=5"></script>
+<script src="rennen.js?v=5"></script>
 </body>
 </html>

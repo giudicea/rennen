@@ -19,7 +19,14 @@
     ray: 'rgba(242,201,76,0.55)', player: '#f2c94c', pos: '#6fcf97', neg: '#eb5757'
   };
 
-  let world = new S.World({ seed: Date.now() & 0xffff });
+  /** aktuelle Reglerwerte als Optionen für eine neue Welt */
+  function worldOpts() {
+    return {
+      popSize: +$('cars').value, laps: +$('laps').value, rays: +$('sensors').value,
+      mutationRate: $('mut').value / 100, crashPenalty: +$('pen').value, selection: $('sel').value / 100
+    };
+  }
+  let world = new S.World({ seed: Date.now() & 0xffff, ...worldOpts() });
   let speed = 1;
   let showRays = true;
   let shuffle = false;
@@ -192,26 +199,38 @@
       cctx.fillText('Fitness-Verlauf erscheint ab Gen. 2', 10, H / 2 + 6);
       return;
     }
-    const max = Math.max(...h, 1);
-    cctx.strokeStyle = COL.car; cctx.lineWidth = 3;
-    cctx.beginPath();
-    h.forEach((v, i) => {
-      const x = (i / (h.length - 1)) * (W - 10) + 5, y = H - 8 - (v / max) * (H - 16);
-      i ? cctx.lineTo(x, y) : cctx.moveTo(x, y);
-    });
-    cctx.stroke();
+    const a = world.avgHistory;
+    const max = Math.max(...h, 1), min = Math.min(0, ...a);
+    const line = (vals, color, width) => {
+      cctx.strokeStyle = color; cctx.lineWidth = width;
+      cctx.beginPath();
+      vals.forEach((v, i) => {
+        const x = (i / (vals.length - 1)) * (W - 10) + 5, y = H - 8 - ((v - min) / (max - min)) * (H - 16);
+        i ? cctx.lineTo(x, y) : cctx.moveTo(x, y);
+      });
+      cctx.stroke();
+    };
+    line(a, 'rgba(242,201,76,0.8)', 2);
+    line(h, COL.car, 3);
   }
 
   // ─── Training ───
   function newTrack() { world.setTrack((Math.random() * 1e9) >>> 0); }
 
+  let lastFrame = 0;
   function trainFrame() {
     // höchstens ~14 ms pro Bild rechnen, damit die Seite flüssig bleibt (LiDAR braucht mehr Rechenzeit)
     const t0 = performance.now();
+    if (run && lastFrame) run.ms += Math.min(100, t0 - lastFrame);   // Trainingszeit (nicht im Editor/Rennen)
+    lastFrame = t0;
     for (let s = 0; s < speed; s++) {
-      if (world.tick() && shuffle) newTrack();
+      if (world.tick()) {
+        logGeneration();
+        if (shuffle) world.setTrack((Math.random() * 1e9) >>> 0);
+      }
       if (performance.now() - t0 > 14) break;
     }
+    if (tableDirty && t0 - lastTable > 1000) renderTable();
     drawTrack(world.track);
     const lead = world.leader();
     for (const c of world.cars) if (!c.alive) drawCar(c, COL.dead, false);
@@ -223,18 +242,239 @@
     $('s-alive').textContent = world.alive + ' / ' + world.popSize;
     if (world.lastBest) {
       const b = world.lastBest;
-      $('s-last').textContent = b.finished ? '🏁 ins Ziel' : `Runde ${Math.min(S.LAPS, b.laps + 1)} · ${Math.round(b.fitness)}`;
+      $('s-last').textContent = b.finished ? '🏁 ins Ziel' : `Runde ${Math.min(world.laps, b.laps + 1)} · ${Math.round(b.fitness)}`;
+      $('s-avg').textContent = Math.round(b.avg);
+      $('s-crash').textContent = Math.round(b.crashPct * 100) + ' %';
+      $('s-fin').textContent = Math.round(b.finishedPct * 100) + ' %';
     }
     $('s-rec').textContent = world.bestEver ? Math.round(world.bestEver) : '–';
-    if (lead) msg(lead.alive ? `Führend: Runde ${Math.min(S.LAPS, lead.laps + 1)} / ${S.LAPS}` : '');
+    if (run) {
+      $('s-first').textContent = run.firstFinish === null ? '–' : 'Gen. ' + run.firstFinish;
+      $('s-time').textContent = run.bestTime === null ? '–' : fmtLap(run.bestTime);
+      $('s-dur').textContent = fmtDur(run.ms);
+    }
+    if (lead) msg(lead.alive ? `Führend: Runde ${Math.min(world.laps, lead.laps + 1)} / ${world.laps}` : '');
     drawChart();
   }
+
+  // ─── Trainings-Protokoll (Tabelle) ───
+  const LOG_KEY = 'ki-rennen-protokoll', IMG_KEY = 'ki-rennen-bilder', LOG_MAX = 100;
+  const readJSON = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (_) { return d; } };
+  let runs = readJSON(LOG_KEY, []);
+  if (!Array.isArray(runs)) runs = [];
+  let run = null, lastSave = 0, lastTable = 0, tableDirty = false;
+  let sortKey = 'id', sortDir = -1;
+
+  const fmtDur = (ms) => {
+    const t = Math.round(ms / 1000), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, sec = t % 60;
+    return h ? `${h} h ${m} min` : `${m}:${String(sec).padStart(2, '0')}`;
+  };
+  // Schritte bis ins Ziel -> Sekunden bei Tempo 1× (60 Schritte pro Sekunde)
+  const fmtLap = (steps) => (steps / 60).toFixed(1) + ' s';
+  const hashStr = (str) => { let h = 7; for (let i = 0; i < str.length; i += 5) h = (h * 31 + str.charCodeAt(i)) | 0; return (h >>> 0).toString(36) + str.length.toString(36); };
+
+  function trackInfo() {
+    const t = world.track;
+    if (shuffle) return { type: 'wechselnd' };
+    if (t.src) {
+      const imgs = readJSON(IMG_KEY, {}), id = hashStr(t.src.url);
+      if (!imgs[id]) { imgs[id] = t.src.url; try { localStorage.setItem(IMG_KEY, JSON.stringify(imgs)); } catch (_) { /* voll */ } }
+      return { type: 'bild', img: id, flip: !!t.flip };
+    }
+    if (t.seed !== undefined) return { type: 'zufall', seed: t.seed };
+    return { type: 'punkte', w: t.halfW, p: roundPts(t.ctrl) };
+  }
+  function trackName(ti) {
+    if (!ti) return '?';
+    return ti.type === 'zufall' ? 'Zufall #' + (ti.seed % 10000)
+      : ti.type === 'punkte' ? `Eigene (${ti.p.length} Pkt.)`
+      : ti.type === 'bild' ? '🖼️ Bild' : '🔀 wechselnd';
+  }
+  const curSettings = () => ({
+    cars: world.popSize, laps: world.laps, rays: world.rays, mut: Math.round(world.mutationRate * 100),
+    pen: world.crashPenalty, sel: Math.round(world.selection * 100), shuffle
+  });
+
+  /** neuen Tabellen-Eintrag beginnen (bei neuer Welt, neuer Strecke oder geänderten Werten) */
+  function startRun(note) {
+    // noch leerer Eintrag (gleich danach wieder etwas geändert)? dann ersetzen statt neue Zeile
+    if (run && run.gens === 0) {
+      runs = runs.filter((r) => r !== run);
+      if (run.note && note && !/^(Start|neu gestartet)$/.test(note)) note = run.note + ', ' + note;
+    }
+    saveRuns(true);
+    const id = runs.reduce((m, r) => Math.max(m, r.id || 0), 0) + 1;
+    run = {
+      id, date: Date.now(), note: note || '', s: curSettings(), track: trackInfo(), gen0: world.generation - 1,
+      gens: 0, best: null, firstFinish: null, avg: null, crash: null, fin: null, bestTime: null, ms: 0, net: null
+    };
+    runs.unshift(run);
+    if (runs.length > LOG_MAX) runs.length = LOG_MAX;
+    saveRuns(true);
+    renderTable();
+  }
+
+  function logGeneration() {
+    if (!run) return;
+    const b = world.lastBest;
+    run.gens = world.generation - 1 - run.gen0;
+    if (run.best === null || b.fitness > run.best) run.best = Math.round(b.fitness);
+    if (b.finished && run.firstFinish === null) run.firstFinish = run.gens;
+    run.avg = Math.round(b.avg);
+    run.crash = Math.round(b.crashPct * 100);
+    run.fin = Math.round(b.finishedPct * 100);
+    if (b.bestFinish !== null && (run.bestTime === null || b.bestFinish < run.bestTime)) run.bestTime = b.bestFinish;
+    tableDirty = true;
+    saveRuns(false);
+  }
+
+  function saveRuns(force) {
+    if (!force && performance.now() - lastSave < 2000) return;
+    lastSave = performance.now();
+    if (run && world.champion) run.net = world.champion.toJSON();
+    for (let tries = 0; tries < LOG_MAX; tries++) {
+      try { localStorage.setItem(LOG_KEY, JSON.stringify(runs)); return; } catch (_) {
+        // Speicher voll: zuerst die Netze der ältesten Läufe weglassen
+        const old = runs.slice().reverse().find((r) => r.net && r !== run);
+        if (!old) return;
+        old.net = null;
+      }
+    }
+  }
+
+  const COLS = [
+    ['id', '#'], ['date', 'Datum'], ['track', 'Strecke'], ['cars', 'Autos'], ['laps', 'Runden'], ['rays', 'Sensoren'],
+    ['mut', 'Mutation'], ['pen', 'Crash-Strafe'], ['sel', 'Auslese'], ['gens', 'Gen.'], ['firstFinish', '1. Ziel (Gen.)'],
+    ['best', 'Bestwert'], ['avg', 'Ø Fitness'], ['crash', 'Crashes'], ['fin', 'Im Ziel'], ['bestTime', 'Bestzeit'], ['ms', 'Zeit']
+  ];
+  function cellValue(r, k) {
+    if (k in (r.s || {})) return r.s[k];
+    if (k === 'track') return trackName(r.track);
+    return r[k];
+  }
+  function cellText(r, k) {
+    const v = cellValue(r, k);
+    if (v === null || v === undefined) return '–';
+    switch (k) {
+      case 'date': return new Date(v).toLocaleString('de-CH', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+      case 'rays': return v === S.RAY_ANGLES.length ? '7 vorne' : `LiDAR ${v}`;
+      case 'mut': case 'sel': case 'crash': case 'fin': return v + ' %';
+      case 'bestTime': return fmtLap(v);
+      case 'ms': return fmtDur(v);
+      case 'laps': return String(v) + (r.s && r.s.shuffle ? ' 🔀' : '');
+      default: return String(v);
+    }
+  }
+
+  function renderTable() {
+    lastTable = performance.now();
+    tableDirty = false;
+    const rows = runs.slice().sort((a, b) => {
+      const x = cellValue(a, sortKey), y = cellValue(b, sortKey);
+      if (x === y) return 0;
+      if (x === null || x === undefined) return 1;
+      if (y === null || y === undefined) return -1;
+      return (x < y ? -1 : 1) * sortDir;
+    });
+    const head = '<tr><th></th>' + COLS.map(([k, t]) =>
+      `<th data-k="${k}">${t}${k === sortKey ? (sortDir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('') + '</tr>';
+    const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const body = rows.map((r) =>
+      `<tr class="${r === run ? 'cur' : ''}" title="${esc(r.note || '')}">` +
+      `<td class="act"><button class="btn" data-a="cont" data-id="${r.id}" ${r.net ? '' : 'disabled'} title="mit diesen Werten und dem besten Netz weitertrainieren">▶ Weiter</button>` +
+      `<button class="btn" data-a="new" data-id="${r.id}" title="mit diesen Werten neu anfangen">↺ Neu</button>` +
+      `<button class="btn" data-a="del" data-id="${r.id}" title="Eintrag löschen">✕</button></td>` +
+      COLS.map(([k]) => `<td>${esc(cellText(r, k))}</td>`).join('') + '</tr>').join('');
+    $('log-table').innerHTML = `<thead>${head}</thead><tbody>${body || '<tr><td colspan="18" class="text-muted">Noch keine Daten.</td></tr>'}</tbody>`;
+    $('log-count').textContent = runs.length + (runs.length === 1 ? ' Lauf' : ' Läufe');
+  }
+
+  /** Regler auf gespeicherte Werte setzen */
+  function applySettings(st) {
+    const set = (id, v) => { if (v !== undefined && v !== null) $(id).value = v; };
+    set('cars', st.cars); set('cars-n', st.cars); set('laps', st.laps); set('laps-n', st.laps);
+    set('mut', st.mut); set('pen', st.pen); set('sel', st.sel);
+    if ([...$('sensors').options].some((o) => +o.value === st.rays)) $('sensors').value = st.rays;
+    shuffle = !!st.shuffle;
+    $('shuffle').checked = shuffle;
+    updateLabels();
+  }
+
+  /** gespeicherte Strecke wiederherstellen (Bilder laden asynchron) */
+  function restoreTrack(ti, done) {
+    try {
+      if (!ti || ti.type === 'wechselnd') return done(world.track);
+      if (ti.type === 'zufall') return done(S.makeTrack(ti.seed));
+      if (ti.type === 'punkte') return done(S.trackFromCtrl(ti.p, ti.w));
+      const url = readJSON(IMG_KEY, {})[ti.img];
+      if (!url) { msg('⚠️ Bild der Strecke nicht mehr gespeichert — aktuelle Strecke wird verwendet.', true); return done(world.track); }
+      const img = new Image();
+      img.onload = () => {
+        const r = rasterize(img), tr = S.trackFromPixels(r.rgba, ti.flip);
+        if (tr.error) return done(world.track);
+        tr.src = { rgba: r.rgba, url: r.url };
+        done(tr);
+      };
+      img.onerror = () => done(world.track);
+      img.src = url;
+    } catch (_) { done(world.track); }
+  }
+
+  function useRun(id, cont) {
+    const r = runs.find((x) => x.id === id);
+    if (!r) return;
+    const net = cont && r.net ? S.NeuralNet.fromJSON(r.net) : null;
+    applySettings(r.s || {});
+    restoreTrack(r.track, (tr) => {
+      if (edit) stopEditor();
+      race = null;
+      document.body.classList.remove('racing');
+      world = new S.World({ track: tr, ...worldOpts(), ...(net ? { seedBrain: net } : {}) });
+      if (net) world.champion = net.clone();
+      updateNetInfo();
+      startRun(cont ? `weiter von #${id}` : `neu mit Werten von #${id}`);
+      msg(cont ? `▶ Lauf #${id} wird fortgesetzt — gleiche Werte, bestes Netz fährt mit.` : `↺ Neu gestartet mit den Werten von Lauf #${id}.`, true);
+    });
+  }
+
+  $('log-table').addEventListener('click', (e) => {
+    const th = e.target.closest('th[data-k]');
+    if (th) {
+      const k = th.dataset.k;
+      if (k === sortKey) sortDir = -sortDir; else { sortKey = k; sortDir = -1; }
+      return renderTable();
+    }
+    const b = e.target.closest('button[data-a]');
+    if (!b) return;
+    const id = +b.dataset.id;
+    if (b.dataset.a === 'del') {
+      if (runs.find((x) => x.id === id) === run) run = null;
+      runs = runs.filter((x) => x.id !== id);
+      saveRuns(true);
+      renderTable();
+    } else useRun(id, b.dataset.a === 'cont');
+  });
+  $('b-log-clear').addEventListener('click', () => {
+    if (!confirm('Alle Trainings-Daten löschen?')) return;
+    runs = [];
+    try { localStorage.removeItem(IMG_KEY); } catch (_) { /* egal */ }
+    startRun('');
+  });
+  $('b-log-csv').addEventListener('click', () => {
+    const q = (t) => `"${String(t).replace(/"/g, '""')}"`;
+    const lines = [COLS.map(([, t]) => q(t)).concat(q('Notiz')).join(';')]
+      .concat(runs.map((r) => COLS.map(([k]) => q(cellText(r, k))).concat(q(r.note || '')).join(';')));
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv' }));
+    a.download = 'ki-rennen-trainings.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+  });
 
   // ─── Rennen gegen die KI ───
   function startRace() {
     const brain = world.champion || world.leader().brain;
-    const ai = new S.Car(world.track, brain.clone());
-    const me = new S.Car(world.track, null);
+    const ai = new S.Car(world.track, brain.clone(), world.laps);
+    const me = new S.Car(world.track, null, world.laps);
     // nebeneinander starten
     const nx = -Math.sin(ai.a), ny = Math.cos(ai.a);
     ai.x += nx * 12; ai.y += ny * 12;
@@ -271,8 +511,8 @@
       ctx.fillText(race.winner === 'me' ? '🏆 Du gewinnst!' : '🤖 Die KI gewinnt!', S.WORLD_W / 2, S.WORLD_H / 2 + 22);
     }
     ctx.textAlign = 'left';
-    const lap = (c) => Math.min(S.LAPS, c.laps + 1);
-    msg(`Du: Runde ${lap(me)}/${S.LAPS}   ·   KI: Runde ${lap(ai)}/${S.LAPS}` +
+    const lap = (c) => Math.min(world.laps, c.laps + 1);
+    msg(`Du: Runde ${lap(me)}/${world.laps}   ·   KI: Runde ${lap(ai)}/${world.laps}` +
       (world.champion ? '' : '   (Tipp: erst ein paar Generationen trainieren!)'));
   }
 
@@ -534,7 +774,9 @@
     world.setTrack(edit.image ? edit.track : S.trackFromCtrl(edit.pts, edit.halfW));
     world.bestEver = 0;          // Rekord gilt pro Strecke
     world.history = [];
+    world.avgHistory = [];
     stopEditor();
+    startRun('eigene Strecke');
     msg('🏁 Neue Strecke übernommen — die KI lernt jetzt darauf.', true);
   });
   $('b-undo').addEventListener('click', () => {
@@ -610,7 +852,7 @@
 
   // ── Bild-Strecken (Paint) ──
   /** Bild auf 1000×640 einpassen (weisser Rand) und als Strecke prüfen */
-  function useImage(img, flip) {
+  function rasterize(img) {
     const c = document.createElement('canvas');
     c.width = S.WORLD_W; c.height = S.WORLD_H;
     const g = c.getContext('2d');
@@ -620,7 +862,11 @@
     const w = img.width * k, h = img.height * k;
     g.imageSmoothingEnabled = false;                    // keine Mischfarben an den Kanten
     g.drawImage(img, (c.width - w) / 2, (c.height - h) / 2, w, h);
-    edit.image = { rgba: g.getImageData(0, 0, c.width, c.height).data, url: c.toDataURL('image/png'), img: c, flip: !!flip };
+    return { rgba: g.getImageData(0, 0, c.width, c.height).data, url: c.toDataURL('image/png'), img: c };
+  }
+
+  function useImage(img, flip) {
+    edit.image = { ...rasterize(img), flip: !!flip };
     rebuild(true);
   }
 
@@ -697,13 +943,42 @@
 
   // ─── Bedienung ───
   $('speed').addEventListener('input', (e) => { speed = +e.target.value; $('v-speed').textContent = speed + '×'; });
-  $('mut').addEventListener('input', (e) => {
-    world.mutationRate = e.target.value / 100;
-    $('v-mut').textContent = e.target.value + ' %';
+  function updateLabels() {
+    $('v-mut').textContent = $('mut').value + ' %';
+    $('v-pen').textContent = +$('pen').value ? $('pen').value + ' Punkte je Tempo' : 'aus';
+    $('v-sel').textContent = $('sel').value + ' % dürfen Eltern werden';
+  }
+  // Regler + Zahlenfeld koppeln; commit wird beim Loslassen / Enter aufgerufen
+  function pair(rangeId, numId, commit) {
+    const r = $(rangeId), n = $(numId);
+    const clamp = (v) => Math.max(+r.min, Math.min(+r.max, Math.round(+v || +r.min)));
+    r.addEventListener('input', () => { n.value = r.value; });
+    r.addEventListener('change', () => commit(+r.value));
+    n.addEventListener('change', () => { n.value = r.value = clamp(n.value); commit(+r.value); });
+  }
+  pair('cars', 'cars-n', (v) => {
+    if (v === world.popSize) return;
+    // neue Population, das beste Netz fährt weiter mit
+    world = new S.World({ track: world.track, ...worldOpts(), ...(world.champion ? { seedBrain: world.champion } : {}) });
+    updateNetInfo();
+    startRun(`${v} Autos`);
+    msg(`🚗 ${v} Autos — neue Generation, das bisher beste Netz fährt mit.`, true);
   });
+  pair('laps', 'laps-n', (v) => {
+    if (v === world.laps) return;
+    world.setLaps(v);
+    startRun(`${v} Runden`);
+    msg(`🏁 Ziel jetzt nach ${v} Runde${v === 1 ? '' : 'n'}.`, true);
+  });
+  $('mut').addEventListener('input', (e) => { world.mutationRate = e.target.value / 100; updateLabels(); });
+  $('mut').addEventListener('change', () => startRun('Mutation geändert'));
+  $('pen').addEventListener('input', (e) => { world.setCrashPenalty(+e.target.value); updateLabels(); });
+  $('pen').addEventListener('change', () => startRun('Crash-Strafe geändert'));
+  $('sel').addEventListener('input', (e) => { world.selection = e.target.value / 100; updateLabels(); });
+  $('sel').addEventListener('change', () => startRun('Auslese geändert'));
   $('rays').addEventListener('change', (e) => { showRays = e.target.checked; });
-  $('shuffle').addEventListener('change', (e) => { shuffle = e.target.checked; });
-  $('b-track').addEventListener('click', newTrack);
+  $('shuffle').addEventListener('change', (e) => { shuffle = e.target.checked; startRun(shuffle ? 'wechselnde Strecken' : 'feste Strecke'); });
+  $('b-track').addEventListener('click', () => { newTrack(); startRun('Zufallsstrecke'); });
   function updateNetInfo() {
     const L = world.layers;
     $('net-info').textContent = `${L[0]} Eingaben → ${L.slice(1, -1).join(' → ')} → ${L[L.length - 1]} Ausgaben`;
@@ -712,11 +987,13 @@
       : `LiDAR: ${world.rays} Strahlen rundherum (360°)`;
   }
   $('b-reset').addEventListener('click', () => {
-    world = new S.World({ track: world.track, rays: world.rays, mutationRate: $('mut').value / 100 });
+    world = new S.World({ track: world.track, ...worldOpts() });
+    startRun('neu gestartet');
   });
   $('sensors').addEventListener('change', (e) => {
-    world = new S.World({ track: world.track, rays: +e.target.value, mutationRate: $('mut').value / 100 });
+    world = new S.World({ track: world.track, ...worldOpts() });
     updateNetInfo();
+    startRun('Sensoren geändert');
     msg(+e.target.value === S.RAY_ANGLES.length
       ? '👀 Standard-Sensoren — neue Generation 1.'
       : `📡 LiDAR mit ${e.target.value} Strahlen — neue Generation 1. Tipp: „Jede Generation neue Strecke“ einschalten.`, true);
@@ -730,8 +1007,9 @@
     let net = null;
     try { net = S.NeuralNet.fromJSON(JSON.parse(localStorage.getItem(SAVE_KEY))); } catch (_) { /* leer */ }
     if (!net) { msg('Kein gespeichertes Netz gefunden.', true); return; }
-    world = new S.World({ track: world.track, seedBrain: net, mutationRate: $('mut').value / 100 });
+    world = new S.World({ track: world.track, ...worldOpts(), seedBrain: net });
     world.champion = net.clone();
+    startRun('Netz geladen');
     if ([...$('sensors').options].some((o) => +o.value === world.rays)) $('sensors').value = world.rays;
     updateNetInfo();
     msg('📂 Gespeichertes Netz geladen — es fährt in der neuen Generation mit.', true);
@@ -762,9 +1040,9 @@
     b.addEventListener('pointercancel', off);
   }
 
-  // Regler auf die Startwerte aus sim.js setzen (falls dort geändert)
-  $('mut').value = Math.round(world.mutationRate * 100);
-  $('v-mut').textContent = $('mut').value + ' %';
+  updateLabels();
   updateNetInfo();
+  addEventListener('pagehide', () => saveRuns(true));
+  startRun('Start');
   requestAnimationFrame(frame);
 })();

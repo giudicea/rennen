@@ -62,7 +62,11 @@
       return this.w[k + j * (this.sizes[l - 1] + 1) + 1 + i];
     }
 
-    clone() { return new NeuralNet(this.sizes, this.w); }
+    clone() {
+      const c = new NeuralNet(this.sizes, this.w);
+      c.crashStreak = this.crashStreak || 0;   // wie viele Generationen in Folge diese Linie gecrasht ist
+      return c;
+    }
 
     /** Jedes Gewicht mit Wahrscheinlichkeit `rate` um N(0, strength) verschieben */
     mutate(rate, strength, rnd = Math.random) {
@@ -80,6 +84,7 @@
     static crossover(a, b, rnd = Math.random) {
       const child = a.clone();
       for (let i = 0; i < child.count; i++) if (rnd() < 0.5) child.w[i] = b.w[i];
+      child.crashStreak = Math.round(((a.crashStreak || 0) + (b.crashStreak || 0)) / 2);
       return child;
     }
 

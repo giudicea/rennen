@@ -50,3 +50,18 @@ if (wl.layers[0] !== 17 || ang.length !== 16 || !ang.some((a) => Math.abs(a) > M
 while (wl.generation <= 30) wl.tick();
 if (!wl.lastBest.finished) { console.error('FEHLER: KI lernt mit LiDAR nicht'); process.exit(1); }
 console.log('OK – LiDAR 360° (16 Strahlen) lernt ebenfalls.');
+
+// Regler-Werte: 1 Auto, 1 Runde, Crash-Strafe, strenge Auslese
+const w1 = new S.World({ seed: 1, popSize: 1, laps: 1, rnd: S.mulberry32(2) });
+while (w1.generation <= 10) w1.tick();
+if (w1.cars.length !== 1) { console.error('FEHLER: 1 Auto'); process.exit(1); }
+const wp = new S.World({ seed: 13, popSize: 60, laps: 1, crashPenalty: 2, selection: 0.1, rnd: S.mulberry32(1) });
+while (wp.generation <= 25) wp.tick();
+const lb = wp.lastBest;
+if (wp.cars.length !== 60 || wp.maxSteps < 3000 || !(lb.crashPct >= 0 && lb.crashPct <= 1)) { console.error('FEHLER: Werte', lb); process.exit(1); }
+if (!lb.finished) { console.error('FEHLER: KI schafft 1 Runde mit Strafe/Auslese nicht'); process.exit(1); }
+const crasher = new S.Car(wp.track, wp.champion.clone(), 1);
+crasher.crashSpeed = 8; crasher.crashPenalty = 10; crasher.brain.crashStreak = 2;
+if (crasher.fitness > -200) { console.error('FEHLER: Crash-Strafe/Serie wirkt nicht', crasher.fitness); process.exit(1); }
+if (new S.World({ popSize: 5000, laps: 99999 }).popSize !== 1000) { console.error('FEHLER: Obergrenze'); process.exit(1); }
+console.log('OK – Autos/Runden/Crash-Strafe/Auslese funktionieren.');

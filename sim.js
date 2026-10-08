@@ -43,7 +43,10 @@
   const LAYERS = [RAY_ANGLES.length + 1, 10, 6, 2];
   const LAPS = 3;
   const STUCK_STEPS = 120;     // so lange ohne Fortschritt -> ausgeschieden
-  const MAX_STEPS = 3000;      // Zeitlimit einer Generation
+  const MAX_STEPS = 3000;      // Zeitlimit einer Generation (mindestens)
+  const MAX_CARS = 1000, MAX_LAPS = 1000;
+  // Zeitlimit wächst mit Streckenlänge und Rundenzahl
+  const maxStepsFor = (n, laps) => Math.max(MAX_STEPS, n * laps * 4);
 
   // ─── Hilfsfunktionen ───
   function mulberry32(a) {
@@ -128,7 +131,7 @@
       ctrl: ctrl.map((p) => [p[0], p[1]]), halfW, n, length, center: pts, left, right,
       // so viele Mittellinien-Punkte reicht ein Sensorstrahl weit (für die Wandsuche)
       rayReach: Math.min(Math.floor(n / 2), Math.ceil(RAY_LEN / (length / n)) + 4),
-      maxSteps: Math.max(MAX_STEPS, n * LAPS * 4)
+      maxSteps: maxStepsFor(n, LAPS)
     };
   }
 
@@ -281,7 +284,7 @@
     return {
       kind: 'bild', road, dist, flip: !!flip, n, length: L,
       start: { x: gx, y: gy, a: Math.atan2(ny, nx) },
-      maxSteps: Math.max(MAX_STEPS, n * LAPS * 4)
+      maxSteps: maxStepsFor(n, LAPS)
     };
   }
 
@@ -301,8 +304,9 @@
 
   // ─── Auto ───
   class Car {
-    constructor(track, brain) {
+    constructor(track, brain, lapsGoal = LAPS) {
       this.brain = brain;
+      this.lapsGoal = lapsGoal;   // so viele Runden bis ins Ziel
       this.reset(track);
     }
 
@@ -318,7 +322,7 @@
       this.v = 0;
       this.idx = 0;           // nächster Mittellinien-Punkt
       this.n = track.n;
-      this.maxSteps = track.maxSteps;
+      this.maxSteps = maxStepsFor(track.n, this.lapsGoal);
       this.progress = 0;      // zurückgelegte Punkte (kann über n hinausgehen = Runden)
       this.best = 0;
       this.sinceBest = 0;
@@ -327,6 +331,7 @@
       this.finished = false;
       this.finishStep = 0;
       this.crashed = false;
+      this.crashSpeed = 0;
       // Sensor-Richtungen ergeben sich aus der Eingabegrösse des Netzes
       this.angles = rayAngles(this.brain ? this.brain.sizes[0] - 1 : RAY_ANGLES.length);
       this.rays = new Float64Array(this.angles.length).fill(1);
@@ -338,6 +343,11 @@
     get fitness() {
       let f = Math.max(0, this.best);
       if (this.finished) f += (this.maxSteps - this.finishStep) * 0.5;
+      // Crash-Strafe: je schneller in die Wand, desto mehr Minus — und mehr, wenn die Linie schon öfter gecrasht ist
+      if (this.crashSpeed > 0 && this.crashPenalty > 0) {
+        const streak = Math.min(4, (this.brain && this.brain.crashStreak) || 0);   // höchstens 5-fach
+        f -= this.crashPenalty * this.crashSpeed * (1 + streak);
+      }
       return f;
     }
 
@@ -433,13 +443,13 @@
 
       if (this.hitsWall(track, ox, oy)) {
         if (bounce) this.bounce(track, ox, oy);
-        else { this.alive = false; this.crashed = true; return; }
+        else { this.crashSpeed = this.v; this.alive = false; this.crashed = true; return; }
       }
 
       if (this.progress > this.best) { this.best = this.progress; this.sinceBest = 0; }
       else this.sinceBest++;
 
-      if (this.progress >= LAPS * track.n && !this.finished) {
+      if (this.progress >= this.lapsGoal * track.n && !this.finished) {
         this.finished = true;
         this.finishStep = this.steps;
         if (!bounce) this.alive = false;
@@ -503,7 +513,10 @@
   // ─── Population + Evolution ───
   class World {
     constructor(opts = {}) {
-      this.popSize = opts.popSize || 500;
+      this.popSize = Math.max(1, Math.min(MAX_CARS, Math.round(opts.popSize || 500)));
+      this.laps = Math.max(1, Math.min(MAX_LAPS, Math.round(opts.laps || LAPS)));
+      this.crashPenalty = opts.crashPenalty ?? 0;     // Strafpunkte je Tempo-Einheit beim Aufprall
+      this.selection = opts.selection ?? 0.3;         // Anteil der Besten, die Nachwuchs bekommen
       this.mutationRate = opts.mutationRate ?? 0.13;
       this.mutationStrength = opts.mutationStrength ?? 0.55;
       this.rnd = opts.rnd || Math.random;
@@ -515,9 +528,11 @@
       this.bestEver = 0;
       this.champion = null;   // bestes Netz bisher
       this.history = [];      // beste Fitness je Generation
+      this.avgHistory = [];   // Durchschnitts-Fitness je Generation
       this.cars = [];
-      for (let i = 0; i < this.popSize; i++) this.cars.push(new Car(this.track, new NeuralNet(this.layers, null, this.rnd)));
+      for (let i = 0; i < this.popSize; i++) this.cars.push(new Car(this.track, new NeuralNet(this.layers, null, this.rnd), this.laps));
       if (opts.seedBrain) this.cars[0].brain = opts.seedBrain.clone();
+      for (const c of this.cars) c.crashPenalty = this.crashPenalty;
       this.step = 0;
     }
 
@@ -527,6 +542,19 @@
       for (const c of this.cars) c.reset(this.track);
       this.step = 0;
     }
+
+    /** Rundenzahl ändern — gilt sofort, auch für die gerade fahrenden Autos */
+    setLaps(laps) {
+      this.laps = Math.max(1, Math.min(MAX_LAPS, Math.round(laps)));
+      for (const c of this.cars) { c.lapsGoal = this.laps; c.maxSteps = maxStepsFor(this.track.n, this.laps); }
+    }
+
+    setCrashPenalty(p) {
+      this.crashPenalty = p;
+      for (const c of this.cars) c.crashPenalty = p;
+    }
+
+    get maxSteps() { return maxStepsFor(this.track.n, this.laps); }
 
     get alive() { let n = 0; for (const c of this.cars) if (c.alive) n++; return n; }
 
@@ -547,14 +575,20 @@
         if (!c.alive) continue;
         const [steer, throttle] = c.think(this.track);
         c.drive(this.track, steer, throttle, false);
-        if (c.alive && (c.sinceBest > STUCK_STEPS || c.progress < -10)) c.alive = false;
+        if (c.alive && (c.sinceBest > STUCK_STEPS || c.progress < -10)) {
+          // Stehenbleiben / Rückwärtsfahren zählt wie ein Crash — sonst wäre "nicht losfahren" bei hoher Strafe am besten
+          c.crashSpeed = Math.max(c.v, MAX_V / 2);
+          c.alive = false;
+        }
         if (c.alive) any = true;
       }
-      if (!any || this.step >= this.track.maxSteps) { this.evolve(); return true; }
+      if (!any || this.step >= this.maxSteps) { this.evolve(); return true; }
       return false;
     }
 
     evolve() {
+      // Crash-Serie je Linie fortschreiben (wird an die Kinder vererbt)
+      for (const c of this.cars) c.brain.crashStreak = c.crashSpeed > 0 ? (c.brain.crashStreak || 0) + 1 : 0;
       const sorted = this.cars.slice().sort((a, b) => b.fitness - a.fitness);
       const top = sorted[0];
       this.history.push(Math.round(top.fitness));
@@ -562,11 +596,24 @@
         this.bestEver = top.fitness;
         this.champion = top.brain.clone();
       }
-      this.lastBest = { fitness: top.fitness, laps: top.laps, finished: top.finished };
+      // Statistik der abgelaufenen Generation
+      let sum = 0, crashes = 0, finished = 0, bestFinish = null;
+      for (const c of sorted) {
+        sum += c.fitness;
+        if (c.crashSpeed > 0) crashes++;
+        if (c.finished) { finished++; if (bestFinish === null || c.finishStep < bestFinish) bestFinish = c.finishStep; }
+      }
+      const avg = sum / sorted.length;
+      this.avgHistory.push(Math.round(avg));
+      this.lastBest = {
+        fitness: top.fitness, laps: top.laps, finished: top.finished,
+        avg, crashPct: crashes / sorted.length, finishedPct: finished / sorted.length, bestFinish
+      };
 
-      const pool = sorted.slice(0, Math.max(4, Math.floor(this.popSize * 0.3)));
+      // Auslese: nur die besten X % dürfen Eltern werden, die anderen Linien sterben aus
+      const pool = sorted.slice(0, Math.max(Math.min(2, sorted.length), Math.round(this.popSize * this.selection)));
       const pick = () => {
-        // Turnier-Auswahl (3 Kandidaten) aus den besten 30 %
+        // Turnier-Auswahl (3 Kandidaten) aus den Eltern
         let b = pool[Math.floor(this.rnd() * pool.length)];
         for (let k = 0; k < 2; k++) {
           const c = pool[Math.floor(this.rnd() * pool.length)];
@@ -576,8 +623,13 @@
       };
 
       const next = [];
-      next.push(this.champion.clone());          // Elite 1: bester aller Zeiten
-      next.push(top.brain.clone());              // Elite 2: bester dieser Runde
+      if (this.popSize === 1) {
+        // nur ein Auto: bestes Netz leicht verändert weiterprobieren (Bergsteiger-Verfahren)
+        next.push(this.champion.clone().mutate(this.mutationRate, this.mutationStrength, this.rnd));
+      } else {
+        next.push(this.champion.clone());                          // Elite 1: bester aller Zeiten
+        if (this.popSize >= 5) next.push(top.brain.clone());       // Elite 2: bester dieser Runde
+      }
       while (next.length < this.popSize) {
         const r = this.rnd();
         let child;
@@ -587,14 +639,15 @@
         child.mutate(this.mutationRate, this.mutationStrength, this.rnd);
         next.push(child);
       }
-      this.cars = next.map((b) => new Car(this.track, b));
+      this.cars = next.map((b) => new Car(this.track, b, this.laps));
+      for (const c of this.cars) c.crashPenalty = this.crashPenalty;
       this.generation++;
       this.step = 0;
     }
   }
 
   const RaceSim = {
-    WORLD_W, WORLD_H, N, HALF_W, CAR_L, CAR_W, RAY_ANGLES, SENSOR_MODES, rayAngles, layersFor, RAY_LEN, MAX_V, LAYERS, LAPS, MAX_STEPS,
+    WORLD_W, WORLD_H, N, HALF_W, CAR_L, CAR_W, RAY_ANGLES, SENSOR_MODES, rayAngles, layersFor, RAY_LEN, MAX_V, LAYERS, LAPS, MAX_STEPS, MAX_CARS, MAX_LAPS,
     makeTrack, trackFromCtrl, validateTrack, trackFromPixels, pixelKind, Car, World, NeuralNet, mulberry32
   };
 
